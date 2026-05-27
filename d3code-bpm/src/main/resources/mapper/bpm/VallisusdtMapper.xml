@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.alphay.boot.bpm.mapper.VallisusdtMapper">
+    <resultMap type="Vallisusdt" id="VallisusdtResult">
+        <result property="id" column="id"/>
+        <result property="startTime" column="start_time"/>
+        <result property="endTime" column="end_time"/>
+        <result property="startPrice" column="start_price"/>
+        <result property="maxPrice" column="max_price"/>
+        <result property="minPrice" column="min_price"/>
+        <result property="endPrice" column="end_price"/>
+        <result property="calcCount" column="calc_count"/>
+        <result property="priceCount" column="price_count"/>
+        <result property="numCount" column="num_count"/>
+        <result property="zdBuyCount" column="zd_buy_count"/>
+        <result property="zdSellCount" column="zd_sell_count"/>
+        <result property="resultStr" column="result_str"/>
+        <result property="createTime" column="create_time"/>
+        <result property="updateTime" column="update_time"/>
+        <result property="deleted" column="deleted"/>
+        <result property="createBy" column="create_by"/>
+        <result property="updateBy" column="update_by"/>
+        <result property="remark" column="remark"/>
+        <result property="resultPrice" column="result_price"/>
+    </resultMap>
+
+    <sql id="selectVallisusdtVo">
+        select id,result_price, start_time, end_time, start_price, max_price, min_price, end_price, calc_count,
+        price_count, num_count, zd_buy_count, zd_sell_count, result_str, create_time, update_time, deleted, create_by,
+        update_by, remark from vallisusdt
+    </sql>
+
+    <select id="selectVallisusdtList" parameterType="Vallisusdt" resultMap="VallisusdtResult">
+        <include refid="selectVallisusdtVo"/>
+        <where>
+            <if test="startTime != null ">
+                and start_time = #{startTime}
+            </if>
+            <if test="endTime != null ">
+                and end_time = #{endTime}
+            </if>
+            <if test="startPrice != null  and startPrice != ''">
+                and start_price = #{startPrice}
+            </if>
+            <if test="maxPrice != null  and maxPrice != ''">
+                and max_price = #{maxPrice}
+            </if>
+            <if test="minPrice != null  and minPrice != ''">
+                and min_price = #{minPrice}
+            </if>
+            <if test="endPrice != null  and endPrice != ''">
+                and end_price = #{endPrice}
+            </if>
+            <if test="calcCount != null  and calcCount != ''">
+                and calc_count = #{calcCount}
+            </if>
+            <if test="priceCount != null  and priceCount != ''">
+                and price_count = #{priceCount}
+            </if>
+            <if test="numCount != null  and numCount != ''">
+                and num_count = #{numCount}
+            </if>
+            <if test="zdBuyCount != null  and zdBuyCount != ''">
+                and zd_buy_count = #{zdBuyCount}
+            </if>
+            <if test="zdSellCount != null  and zdSellCount != ''">
+                and zd_sell_count = #{zdSellCount}
+            </if>
+            <if test="resultStr != null  and resultStr != ''">
+                and result_str = #{resultStr}
+            </if>
+            <if test="resultPrice != null  and resultPrice != ''">
+                and result_price = #{resultPrice}
+            </if>
+            <if test="deleted != null">
+                and deleted = #{deleted}
+            </if>
+            <if test="deleted == null">
+                and deleted = 0
+            </if>
+        </where>
+    </select>
+</mapper>
