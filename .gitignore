@@ -47,3 +47,4 @@ nbdist/
 !*/build/*.xml
 .DS_Store
 /uploadPath
+/sql/
