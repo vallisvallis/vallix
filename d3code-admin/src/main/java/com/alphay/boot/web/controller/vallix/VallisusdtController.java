@@ -32,6 +32,9 @@ public class VallisusdtController extends BaseController {
     @Autowired
     private VallisUsdtEventTool vallisUsdtEventTool;
 
+    @Autowired
+    private KlineCacheService klineCacheService;
+
     // ===================== 回测接口 =====================
 
     /**
@@ -346,6 +349,13 @@ public class VallisusdtController extends BaseController {
     public AjaxResult getAggregatedKlineData(@RequestParam(defaultValue = "1000") int oneMinLimit,
                                              @RequestParam String timeframe) {
         try {
+            String cacheKey = String.format("kline_%d_%s", oneMinLimit, timeframe);
+            
+            Map<String, Object> cachedData = klineCacheService.get(cacheKey);
+            if (cachedData != null) {
+                return AjaxResult.success(cachedData);
+            }
+            
             List<Vallisusdt> oneMinList = vallisUsdtEventTool.getEth1minKline(oneMinLimit);
 
             Map<String, Object> result = new HashMap<>();
@@ -362,24 +372,37 @@ public class VallisusdtController extends BaseController {
 
                 case "30min":
                     List<Vallisusdt> rolling30Min = combineService.calculateRolling30Min(oneMinList);
-                    List<Vallisusdt> natural30Min = combineService.buildNatural10MinList(oneMinList);
+                    List<Vallisusdt> natural30Min = combineService.buildNatural30MinList(oneMinList);
                     result.put("rolling_30min", rolling30Min);
                     result.put("natural_30min", natural30Min);
                     result.put("30min_count", rolling30Min.size());
                     break;
 
+                case "60min":
+                    List<Vallisusdt> rolling60Min = combineService.calculateRolling60Min(oneMinList);
+                    List<Vallisusdt> natural60Min = combineService.buildNatural60MinList(oneMinList);
+                    result.put("rolling_60min", rolling60Min);
+                    result.put("natural_60min", natural60Min);
+                    result.put("60min_count", rolling60Min.size());
+                    break;
+
                 case "all":
                     List<Vallisusdt> rolling10MinAll = combineService.calculateRolling10Min(oneMinList);
                     List<Vallisusdt> rolling30MinAll = combineService.calculateRolling30Min(oneMinList);
+                    List<Vallisusdt> rolling60MinAll = combineService.calculateRolling60Min(oneMinList);
                     result.put("rolling_10min", rolling10MinAll);
                     result.put("rolling_30min", rolling30MinAll);
+                    result.put("rolling_60min", rolling60MinAll);
                     result.put("10min_count", rolling10MinAll.size());
                     result.put("30min_count", rolling30MinAll.size());
+                    result.put("60min_count", rolling60MinAll.size());
                     break;
 
                 default:
-                    return AjaxResult.error("时间框架参数错误，必须是'10min'、'30min'或'all'");
+                    return AjaxResult.error("时间框架参数错误，必须是'10min'、'30min'、'60min'或'all'");
             }
+
+            klineCacheService.put(cacheKey, result);
 
             return AjaxResult.success(result);
         } catch (Exception e) {

@@ -16,50 +16,56 @@ public class KlineCombineService {
     // ===================== 核心修复：正确的滚动窗口计算 =====================
 
     /**
-     * 滚动10分钟窗口计算（每分钟计算一次）
-     * 正确实现：每次滑动1分钟，计算最近10分钟的数据
+     * 正确实现：每次滑动10分钟，生成真正的10分钟K线
      */
     public List<Vallisusdt> calculateRolling10Min(List<Vallisusdt> oneMinList) {
         if (oneMinList == null || oneMinList.size() < 10) {
-            log.warn("1分钟数据不足10根，无法计算滚动10分钟窗口");
+            log.warn("1分钟数据不足10根，无法计算10分钟K线");
             return new ArrayList<>();
         }
 
         List<Vallisusdt> rolling10Min = new ArrayList<>();
 
-        // 从第10根开始，每次滑动1根（滚动窗口）
-        for (int i = 9; i < oneMinList.size(); i++) {
-            // 取最近10根1分钟K线
-            List<Vallisusdt> window = oneMinList.subList(i - 9, i + 1);
+        // 每次滑动10根（10分钟），生成真正的10分钟K线
+        for (int i = 9; i < oneMinList.size(); i += 10) {
+            // 取10根1分钟K线
+            int startIndex = Math.max(0, i - 9);
+            int endIndex = Math.min(i + 1, oneMinList.size());
+            List<Vallisusdt> window = oneMinList.subList(startIndex, endIndex);
+            
             Vallisusdt rollingKline = buildKline(window);
 
             // 设置正确的时间（窗口的开始和结束时间）
             rollingKline.setStartTime(window.get(0).getStartTime());
             rollingKline.setEndTime(window.get(window.size() - 1).getEndTime());
 
-            // 添加标记，表示这是滚动窗口计算
+            // 添加标记，表示这是10分钟K线
             rollingKline.setRemark("ROLLING_10MIN_" + rollingKline.getStartTime().getTime());
 
             rolling10Min.add(rollingKline);
         }
 
-        log.info("滚动10分钟计算完成，生成 {} 个窗口", rolling10Min.size());
+        log.info("10分钟K线计算完成，生成 {} 根K线", rolling10Min.size());
         return rolling10Min;
     }
 
     /**
-     * 滚动30分钟窗口计算
+     * 滚动30分钟窗口计算，每次滑动30分钟
      */
     public List<Vallisusdt> calculateRolling30Min(List<Vallisusdt> oneMinList) {
         if (oneMinList == null || oneMinList.size() < 30) {
-            log.warn("1分钟数据不足30根，无法计算滚动30分钟窗口");
+            log.warn("1分钟数据不足30根，无法计算30分钟K线");
             return new ArrayList<>();
         }
 
         List<Vallisusdt> rolling30Min = new ArrayList<>();
 
-        for (int i = 29; i < oneMinList.size(); i++) {
-            List<Vallisusdt> window = oneMinList.subList(i - 29, i + 1);
+        // 每次滑动30根（30分钟），生成真正的30分钟K线
+        for (int i = 29; i < oneMinList.size(); i += 30) {
+            int startIndex = Math.max(0, i - 29);
+            int endIndex = Math.min(i + 1, oneMinList.size());
+            List<Vallisusdt> window = oneMinList.subList(startIndex, endIndex);
+            
             Vallisusdt rollingKline = buildKline(window);
 
             rollingKline.setStartTime(window.get(0).getStartTime());
@@ -69,8 +75,38 @@ public class KlineCombineService {
             rolling30Min.add(rollingKline);
         }
 
-        log.info("滚动30分钟计算完成，生成 {} 个窗口", rolling30Min.size());
+        log.info("30分钟K线计算完成，生成 {} 根K线", rolling30Min.size());
         return rolling30Min;
+    }
+
+    /**
+     * 滚动60分钟窗口计算，每次滑动60分钟
+     */
+    public List<Vallisusdt> calculateRolling60Min(List<Vallisusdt> oneMinList) {
+        if (oneMinList == null || oneMinList.size() < 60) {
+            log.warn("1分钟数据不足60根，无法计算60分钟K线");
+            return new ArrayList<>();
+        }
+
+        List<Vallisusdt> rolling60Min = new ArrayList<>();
+
+        // 每次滑动60根（60分钟），生成真正的60分钟K线
+        for (int i = 59; i < oneMinList.size(); i += 60) {
+            int startIndex = Math.max(0, i - 59);
+            int endIndex = Math.min(i + 1, oneMinList.size());
+            List<Vallisusdt> window = oneMinList.subList(startIndex, endIndex);
+            
+            Vallisusdt rollingKline = buildKline(window);
+
+            rollingKline.setStartTime(window.get(0).getStartTime());
+            rollingKline.setEndTime(window.get(window.size() - 1).getEndTime());
+            rollingKline.setRemark("ROLLING_60MIN_" + rollingKline.getStartTime().getTime());
+
+            rolling60Min.add(rollingKline);
+        }
+
+        log.info("60分钟K线计算完成，生成 {} 根K线", rolling60Min.size());
+        return rolling60Min;
     }
 
     /**
@@ -98,17 +134,18 @@ public class KlineCombineService {
     // ===================== 自然时间K线（用于显示） =====================
 
     /**
-     * 自然时间10分钟K线（用于显示，不用于策略）
+     * 自然时间10分钟K线（按实际交易时间分组）
      */
     public List<Vallisusdt> buildNatural10MinList(List<Vallisusdt> oneMinList) {
         if (oneMinList == null || oneMinList.isEmpty()) {
             return new ArrayList<>();
         }
 
-        // 按10分钟分组
+        // 按10分钟分组（对齐到10分钟边界）
         Map<Long, List<Vallisusdt>> groupBy10Min = oneMinList.stream()
                 .collect(Collectors.groupingBy(k -> {
-                    long tenMinuteStart = (k.getStartTime().getTime() / (10 * 60 * 1000L)) * (10 * 60 * 1000L);
+                    long timestamp = k.getStartTime().getTime();
+                    long tenMinuteStart = (timestamp / (10 * 60 * 1000L)) * (10 * 60 * 1000L);
                     return tenMinuteStart;
                 }));
 
@@ -116,14 +153,18 @@ public class KlineCombineService {
                 .sorted(Map.Entry.comparingByKey())
                 .map(entry -> {
                     Vallisusdt kline = buildKline(entry.getValue());
-                    kline.setRemark("NATURAL_10MIN");
+                    if (kline != null) {
+                        kline.setStartTime(new Date(entry.getKey()));
+                        kline.setRemark("NATURAL_10MIN");
+                    }
                     return kline;
                 })
+                .filter(k -> k != null)
                 .collect(Collectors.toList());
     }
 
     /**
-     * 自然时间30分钟K线（用于显示，不用于策略）
+     * 自然时间30分钟K线（按实际交易时间分组）
      */
     public List<Vallisusdt> buildNatural30MinList(List<Vallisusdt> oneMinList) {
         if (oneMinList == null || oneMinList.isEmpty()) {
@@ -132,7 +173,8 @@ public class KlineCombineService {
 
         Map<Long, List<Vallisusdt>> groupBy30Min = oneMinList.stream()
                 .collect(Collectors.groupingBy(k -> {
-                    long thirtyMinuteStart = (k.getStartTime().getTime() / (30 * 60 * 1000L)) * (30 * 60 * 1000L);
+                    long timestamp = k.getStartTime().getTime();
+                    long thirtyMinuteStart = (timestamp / (30 * 60 * 1000L)) * (30 * 60 * 1000L);
                     return thirtyMinuteStart;
                 }));
 
@@ -140,9 +182,42 @@ public class KlineCombineService {
                 .sorted(Map.Entry.comparingByKey())
                 .map(entry -> {
                     Vallisusdt kline = buildKline(entry.getValue());
-                    kline.setRemark("NATURAL_30MIN");
+                    if (kline != null) {
+                        kline.setStartTime(new Date(entry.getKey()));
+                        kline.setRemark("NATURAL_30MIN");
+                    }
                     return kline;
                 })
+                .filter(k -> k != null)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 自然时间60分钟K线（按实际交易时间分组）
+     */
+    public List<Vallisusdt> buildNatural60MinList(List<Vallisusdt> oneMinList) {
+        if (oneMinList == null || oneMinList.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        Map<Long, List<Vallisusdt>> groupBy60Min = oneMinList.stream()
+                .collect(Collectors.groupingBy(k -> {
+                    long timestamp = k.getStartTime().getTime();
+                    long sixtyMinuteStart = (timestamp / (60 * 60 * 1000L)) * (60 * 60 * 1000L);
+                    return sixtyMinuteStart;
+                }));
+
+        return groupBy60Min.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(entry -> {
+                    Vallisusdt kline = buildKline(entry.getValue());
+                    if (kline != null) {
+                        kline.setStartTime(new Date(entry.getKey()));
+                        kline.setRemark("NATURAL_60MIN");
+                    }
+                    return kline;
+                })
+                .filter(k -> k != null)
                 .collect(Collectors.toList());
     }
 

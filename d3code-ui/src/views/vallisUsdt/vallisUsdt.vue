@@ -1,399 +1,115 @@
 <template>
-  <div class="monitor-container">
-    <!-- 头部标题和状态 -->
+  <div class="kline-monitor-container">
+    <!-- 头部标题 -->
     <div class="header">
       <div class="title-section">
-        <h1>ETH/USDT 事件合约智能交易系统</h1>
+        <h1>ETH/USDT K线监控（近一周）</h1>
         <div class="status-bar">
           <span class="update-time">最后更新: {{ formatTime(updateTime) }}</span>
-          <span class="refresh-btn" @click="forceRefresh">
-            <i class="el-icon-refresh" :class="{ 'refreshing': isRefreshing }"></i>
+          <span class="refresh-btn" @click="loadAllKlineData">
+            <i class="el-icon-refresh" :class="{ 'refreshing': klineLoading }"></i>
             刷新
           </span>
-          <el-tag :type="healthStatus.type" size="small">
-            {{ healthStatus.text }}
-          </el-tag>
         </div>
       </div>
     </div>
 
-    <!-- 主要监控面板 -->
-    <div class="main-content">
-      <!-- 左侧：实时数据 -->
-      <div class="left-panel">
-        <!-- 市场概览 -->
-        <div class="card market-overview">
-          <div class="card-header">
-            <h3><i class="el-icon-data-line"></i> 市场概览</h3>
-            <el-tag :type="getRiskType(riskLevel)" size="small">
-              风险等级: {{ riskLevel }}
-            </el-tag>
-          </div>
-          <div class="card-body">
-            <div class="overview-grid">
-              <div class="overview-item">
-                <label>市场状态</label>
-                <span :class="getMarketStatusClass(marketStatus)">{{ marketStatus }}</span>
-              </div>
-              <div class="overview-item">
-                <label>交易时段</label>
-                <span>{{ tradingSession }}</span>
-              </div>
-              <div class="overview-item">
-                <label>连续同向K线</label>
-                <span :class="continuous > 3 ? 'warning' : 'normal'">{{ continuous }}</span>
-              </div>
-              <div class="overview-item">
-                <label>10分钟波动率</label>
-                <span>{{ formatPercent(volatility10min) }}</span>
-              </div>
-              <div class="overview-item">
-                <label>30分钟波动率</label>
-                <span>{{ formatPercent(volatility30min) }}</span>
-              </div>
-              <div class="overview-item">
-                <label>连续亏损</label>
-                <span :class="losingStreak > 2 ? 'danger' : 'normal'">{{ losingStreak }} 次</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 10分钟周期 -->
-        <div class="card period-10min">
-          <div class="card-header">
-            <h3><i class="el-icon-timer"></i> 10分钟周期（均值回归策略）</h3>
-            <el-tag :type="getSignalType(signal10)" size="small">
-              {{ signal10 }}
-            </el-tag>
-          </div>
-          <div class="card-body">
-            <div class="price-grid">
-              <div class="price-item">
-                <label>开盘价</label>
-                <span class="price">{{ formatPrice(min10.start_price) }}</span>
-              </div>
-              <div class="price-item">
-                <label>收盘价</label>
-                <span class="price">{{ formatPrice(min10.end_price) }}</span>
-              </div>
-              <div class="price-item">
-                <label>最高价</label>
-                <span class="price high">{{ formatPrice(min10.max_price) }}</span>
-              </div>
-              <div class="price-item">
-                <label>最低价</label>
-                <span class="price low">{{ formatPrice(min10.min_price) }}</span>
-              </div>
-              <div class="price-item">
-                <label>涨跌幅</label>
-                <span :class="min10.change_value > 0 ? 'up' : 'down'">
-                  {{ formatPercent(min10.change_value) }}
-                </span>
-              </div>
-              <div class="price-item">
-                <label>成交量</label>
-                <span>{{ formatVolume(min10.volume) }} ETH</span>
-              </div>
-            </div>
-            <div class="strategy-info">
-              <div class="strategy-param">
-                <label>入场阈值</label>
-                <span>{{ STRATEGY_PARAMS.MIN10.ENTRY_THRESHOLD }}%</span>
-              </div>
-              <div class="strategy-param">
-                <label>止损阈值</label>
-                <span>{{ STRATEGY_PARAMS.MIN10.STOP_LOSS_THRESHOLD }}%</span>
-              </div>
-              <div class="strategy-param">
-                <label>目标收益</label>
-                <span>{{ STRATEGY_PARAMS.MIN10.TARGET_RETURN }}%</span>
-              </div>
-              <div class="strategy-param">
-                <label>持仓时间</label>
-                <span>{{ STRATEGY_PARAMS.MIN10.HOLD_PERIOD }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 30分钟周期 -->
-        <div class="card period-30min">
-          <div class="card-header">
-            <h3><i class="el-icon-time"></i> 30分钟周期（趋势突破策略）</h3>
-            <el-tag :type="getSignalType(signal30)" size="small">
-              {{ signal30 }}
-            </el-tag>
-          </div>
-          <div class="card-body">
-            <div class="price-grid">
-              <div class="price-item">
-                <label>开盘价</label>
-                <span class="price">{{ formatPrice(min30.start_price) }}</span>
-              </div>
-              <div class="price-item">
-                <label>收盘价</label>
-                <span class="price">{{ formatPrice(min30.end_price) }}</span>
-              </div>
-              <div class="price-item">
-                <label>最高价</label>
-                <span class="price high">{{ formatPrice(min30.max_price) }}</span>
-              </div>
-              <div class="price-item">
-                <label>最低价</label>
-                <span class="price low">{{ formatPrice(min30.min_price) }}</span>
-              </div>
-              <div class="price-item">
-                <label>涨跌幅</label>
-                <span :class="min30.changeValue > 0 ? 'up' : 'down'">
-                  {{ formatPercent(min30.change_value) }}
-                </span>
-              </div>
-              <div class="price-item">
-                <label>成交量</label>
-                <span>{{ formatVolume(min30.volume) }} ETH</span>
-              </div>
-            </div>
-            <div class="strategy-info">
-              <div class="strategy-param">
-                <label>止损</label>
-                <span>{{ STRATEGY_PARAMS.MIN30.STOP_LOSS }}%</span>
-              </div>
-              <div class="strategy-param">
-                <label>止盈</label>
-                <span>{{ STRATEGY_PARAMS.MIN30.TAKE_PROFIT }}%</span>
-              </div>
-              <div class="strategy-param">
-                <label>持仓时间</label>
-                <span>{{ STRATEGY_PARAMS.MIN30.HOLD_PERIOD }}</span>
-              </div>
-              <div class="strategy-param">
-                <label>风险回报比</label>
-                <span>1:2</span>
-              </div>
-            </div>
-          </div>
-        </div>
+    <!-- 1分钟K线图 -->
+    <div class="card kline-chart-card">
+      <div class="card-header">
+        <h3><i class="el-icon-video-camera"></i> 1分钟K线图（价格变化标记）</h3>
+        <el-tag size="small" type="info">{{ klineDataList1.length }} 根K线</el-tag>
       </div>
-
-      <!-- 右侧：交易信号和操作 -->
-      <div class="right-panel">
-        <!-- 综合信号 -->
-        <div class="card overall-signal">
-          <div class="card-header">
-            <h3><i class="el-icon-s-operation"></i> 综合交易信号</h3>
-            <el-tag :type="getSignalType(overallSignal)" size="small" effect="dark">
-              {{ overallSignal }}
-            </el-tag>
+      <div class="card-body">
+        <div ref="klineChartRef1" class="kline-chart"></div>
+        <div class="chart-legend">
+          <div class="legend-item">
+            <span class="legend-color up"></span>
+            <span>价格上涨（高于前一根收盘价）</span>
           </div>
-          <div class="card-body">
-            <div class="signal-analysis">
-              <div class="analysis-item">
-                <label>信号强度</label>
-                <span :class="getSignalStrengthClass(signalStrength)">
-                  {{ signalStrength }}
-                </span>
-              </div>
-              <div class="analysis-item">
-                <label>成交量确认</label>
-                <span :class="volumeConfirm ? 'confirm' : 'no-confirm'">
-                  {{ volumeConfirm ? '✓ 已确认' : '✗ 未确认' }}
-                </span>
-              </div>
-              <div class="analysis-item">
-                <label>建议操作</label>
-                <span class="recommended-action">{{ recommendedAction }}</span>
-              </div>
-              <div class="analysis-item">
-                <label>建议仓位</label>
-                <span class="recommended-position">{{ recommendedPosition }}%</span>
-              </div>
-            </div>
-
-            <!-- 操作按钮 -->
-            <div class="action-buttons" v-if="showTradingButtons">
-              <el-button
-                type="success"
-                :disabled="!canOpenLong"
-                @click="openPosition('做多')"
-                :loading="openingPosition === '做多'">
-                <i class="el-icon-top"></i> 开仓做多
-              </el-button>
-              <el-button
-                type="danger"
-                :disabled="!canOpenShort"
-                @click="openPosition('做空')"
-                :loading="openingPosition === '做空'">
-                <i class="el-icon-bottom"></i> 开仓做空
-              </el-button>
-              <el-button
-                type="warning"
-                :disabled="!inPosition"
-                @click="closePosition"
-                :loading="closingPosition">
-                <i class="el-icon-switch-button"></i> 平仓
-              </el-button>
-            </div>
-
-            <!-- 持仓信息 -->
-            <div class="position-info" v-if="inPosition && currentPosition">
-              <h4>当前持仓</h4>
-              <div class="position-details">
-                <div class="detail-item">
-                  <label>方向</label>
-                  <span :class="currentPosition.direction === '做多' ? 'long' : 'short'">
-                    {{ currentPosition.direction }}
-                  </span>
-                </div>
-                <div class="detail-item">
-                  <label>开仓价</label>
-                  <span>{{ formatPrice(currentPosition.entry_price) }}</span>
-                </div>
-                <div class="detail-item">
-                  <label>当前价</label>
-                  <span>{{ formatPrice(min10.endPrice) }}</span>
-                </div>
-                <div class="detail-item">
-                  <label>浮动盈亏</label>
-                  <span :class="currentPL >= 0 ? 'profit' : 'loss'">
-                    {{ formatPercent(currentPL) }}
-                  </span>
-                </div>
-                <div class="detail-item">
-                  <label>止损价</label>
-                  <span class="stop-loss">{{ formatPrice(currentPosition.stop_loss) }}</span>
-                </div>
-                <div class="detail-item">
-                  <label>止盈价</label>
-                  <span class="take-profit">{{ formatPrice(currentPosition.take_profit) }}</span>
-                </div>
-              </div>
-            </div>
+          <div class="legend-item">
+            <span class="legend-color down"></span>
+            <span>价格下跌（低于前一根收盘价）</span>
           </div>
-        </div>
-
-        <!-- 回测面板 -->
-        <div class="card backtest-panel">
-          <div class="card-header">
-            <h3><i class="el-icon-s-data"></i> 策略回测</h3>
-            <el-button-group>
-              <el-button
-                size="small"
-                @click="runBackTest('strategyA')"
-                :loading="backtestLoading === 'strategyA'">
-                策略A
-              </el-button>
-              <el-button
-                size="small"
-                @click="runBackTest('strategyB')"
-                :loading="backtestLoading === 'strategyB'">
-                策略B
-              </el-button>
-              <el-button
-                size="small"
-                @click="runBackTest('comprehensive')"
-                :loading="backtestLoading === 'comprehensive'">
-                综合
-              </el-button>
-            </el-button-group>
-          </div>
-          <div class="card-body">
-            <div v-if="backtestResult" class="backtest-result">
-              <div class="result-header">
-                <h4>{{ backtestResult.strategy_name }}</h4>
-                <el-tag :type="backtestResult.win_rate > 60 ? 'success' : 'warning'">
-                  胜率: {{ backtestResult.win_rate }}
-                </el-tag>
-              </div>
-              <div class="result-grid">
-                <div class="result-item">
-                  <label>总交易次数</label>
-                  <span>{{ backtestResult.total_trades }}</span>
-                </div>
-                <div class="result-item">
-                  <label>盈利次数</label>
-                  <span>{{ backtestResult.winning_trades }}</span>
-                </div>
-                <div class="result-item">
-                  <label>总收益</label>
-                  <span :class="parseFloat(backtestResult.total_profit) > 0 ? 'profit' : 'loss'">
-                    {{ backtestResult.total_profit }}
-                  </span>
-                </div>
-                <div class="result-item">
-                  <label>最大回撤</label>
-                  <span class="drawdown">{{ backtestResult.max_drawdown }}</span>
-                </div>
-                <div class="result-item">
-                  <label>夏普比率</label>
-                  <span :class="parseFloat(backtestResult.sharpe_ratio) > 1 ? 'good' : 'bad'">
-                    {{ backtestResult.sharpe_ratio }}
-                  </span>
-                </div>
-                <div class="result-item">
-                  <label>盈亏比</label>
-                  <span>{{ backtestResult.profit_loss_ratio }}</span>
-                </div>
-              </div>
-            </div>
-            <div v-else class="no-result">
-              <p>点击上方按钮运行回测</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- 信号历史 -->
-        <div class="card signal-history">
-          <div class="card-header">
-            <h3><i class="el-icon-notebook-2"></i> 信号历史</h3>
-            <el-button size="small" @click="loadSignalHistory">刷新</el-button>
-          </div>
-          <div class="card-body">
-            <div class="history-list">
-              <div v-for="(signal, index) in signalHistory" :key="index" class="history-item">
-                <div class="time">{{ formatTime(signal.time) }}</div>
-                <div class="signal">
-                  <el-tag :type="getSignalType(signal.overall_signal)" size="mini">
-                    {{ signal.overall_signal }}
-                  </el-tag>
-                </div>
-                <div class="details">
-                  <span>10分: {{ signal['10min_signal'] }}</span>
-                  <span>30分: {{ signal['30min_signal'] }}</span>
-                </div>
-              </div>
-            </div>
+          <div class="legend-item">
+            <span class="legend-color equal"></span>
+            <span>价格持平（等于前一根收盘价）</span>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 底部统计信息 -->
-    <div class="footer">
-      <div class="statistics">
-        <div class="stat-item">
-          <label>系统运行时间</label>
-          <span>{{ formatDuration(runTime) }}</span>
+    <!-- 10分钟K线图 -->
+    <div class="card kline-chart-card">
+      <div class="card-header">
+        <h3><i class="el-icon-timer"></i> 10分钟K线图（价格变化标记）</h3>
+        <el-tag size="small" type="success">{{ klineDataList10.length }} 根K线</el-tag>
+      </div>
+      <div class="card-body">
+        <div ref="klineChartRef10" class="kline-chart"></div>
+        <div class="chart-legend">
+          <div class="legend-item">
+            <span class="legend-color up"></span>
+            <span>价格上涨（高于前一根收盘价）</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color down"></span>
+            <span>价格下跌（低于前一根收盘价）</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color equal"></span>
+            <span>价格持平（等于前一根收盘价）</span>
+          </div>
         </div>
-        <div class="stat-item">
-          <label>总交易次数</label>
-          <span>{{ totalTrades }}</span>
+      </div>
+    </div>
+
+    <!-- 30分钟K线图 -->
+    <div class="card kline-chart-card">
+      <div class="card-header">
+        <h3><i class="el-icon-time"></i> 30分钟K线图（价格变化标记）</h3>
+        <el-tag size="small" type="warning">{{ klineDataList30.length }} 根K线</el-tag>
+      </div>
+      <div class="card-body">
+        <div ref="klineChartRef30" class="kline-chart"></div>
+        <div class="chart-legend">
+          <div class="legend-item">
+            <span class="legend-color up"></span>
+            <span>价格上涨（高于前一根收盘价）</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color down"></span>
+            <span>价格下跌（低于前一根收盘价）</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color equal"></span>
+            <span>价格持平（等于前一根收盘价）</span>
+          </div>
         </div>
-        <div class="stat-item">
-          <label>总胜率</label>
-          <span :class="overallWinRate > 60 ? 'good' : 'bad'">
-            {{ formatPercent(overallWinRate, 1) }}
-          </span>
-        </div>
-        <div class="stat-item">
-          <label>总收益</label>
-          <span :class="totalProfit >= 0 ? 'profit' : 'loss'">
-            {{ formatPercent(totalProfit, 4) }}
-          </span>
-        </div>
-        <div class="stat-item">
-          <label>最大回撤</label>
-          <span class="drawdown">{{ formatPercent(maxDrawdown, 2) }}</span>
+      </div>
+    </div>
+
+    <!-- 60分钟K线图 -->
+    <div class="card kline-chart-card">
+      <div class="card-header">
+        <h3><i class="el-icon-watch"></i> 60分钟K线图（价格变化标记）</h3>
+        <el-tag size="small" type="danger">{{ klineDataList60.length }} 根K线</el-tag>
+      </div>
+      <div class="card-body">
+        <div ref="klineChartRef60" class="kline-chart"></div>
+        <div class="chart-legend">
+          <div class="legend-item">
+            <span class="legend-color up"></span>
+            <span>价格上涨（高于前一根收盘价）</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color down"></span>
+            <span>价格下跌（低于前一根收盘价）</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color equal"></span>
+            <span>价格持平（等于前一根收盘价）</span>
+          </div>
         </div>
       </div>
     </div>
@@ -402,442 +118,469 @@
 
 <script>
 import * as api from '@/api/tool/vallisusdt/vallisusdt'
+import * as echarts from 'echarts'
 
 export default {
-  name: 'VallisusdtMonitor',
+  name: 'VallisusdtKlineMonitor',
   data() {
     return {
-      // 监控数据
       updateTime: null,
-      isRefreshing: false,
-      healthStatus: { type: 'success', text: '正常' },
-
-      // 市场数据
-      marketStatus: '未知',
-      tradingSession: '未知',
-      riskLevel: '中',
-      continuous: 0,
-      volatility10min: 0,
-      volatility30min: 0,
-      losingStreak: 0,
-
-      // 10分钟数据
-      min10: {
-        startPrice: '0',
-        endPrice: '0',
-        maxPrice: '0',
-        minPrice: '0',
-        changeValue: 0,
-        volume: '0'
-      },
-      signal10: '观望',
-
-      // 30分钟数据
-      min30: {
-        startPrice: '0',
-        endPrice: '0',
-        maxPrice: '0',
-        minPrice: '0',
-        changeValue: 0,
-        volume: '0'
-      },
-      signal30: '观望',
-
-      // 综合信号
-      overallSignal: '观望',
-      signalStrength: '普通',
-      volumeConfirm: false,
-      recommendedAction: '保持观望',
-      recommendedPosition: 1,
-
-      // 交易状态
-      inPosition: false,
-      currentPosition: null,
-      currentPL: 0,
-      openingPosition: null,
-      closingPosition: false,
-      showTradingButtons: true, // 实际项目中应该根据用户权限设置
-
-      // 回测
-      backtestLoading: null,
-      backtestResult: null,
-
-      // 历史
-      signalHistory: [],
-
-      // 统计
-      runTime: 0,
-      totalTrades: 0,
-      overallWinRate: 0,
-      totalProfit: 0,
-      maxDrawdown: 0,
-
-      // 定时器
-      timer: null,
-      startTime: Date.now()
+      klineLoading: false,
+      klineDataList1: [],
+      klineDataList10: [],
+      klineDataList30: [],
+      klineDataList60: [],
+      klineChart1: null,
+      klineChart10: null,
+      klineChart30: null,
+      klineChart60: null
     }
   },
 
-  computed: {
-    // 策略参数常量
-    STRATEGY_PARAMS() {
-      return api.STRATEGY_PARAMS
-    },
-
-    // 是否可以开多仓
-    canOpenLong() {
-      return !this.inPosition &&
-        this.overallSignal.includes('做多') &&
-        this.riskLevel !== '高' &&
-        this.volumeConfirm
-    },
-
-    // 是否可以开空仓
-    canOpenShort() {
-      return !this.inPosition &&
-        this.overallSignal.includes('做空') &&
-        this.riskLevel !== '高' &&
-        this.volumeConfirm
-    }
-  },
-
-  created() {
-    this.initMonitor()
+  mounted() {
+    this.$nextTick(() => {
+      this.initKlineCharts()
+      this.loadAllKlineData()
+    })
   },
 
   beforeDestroy() {
-    this.clearTimers()
+    this.disposeCharts()
   },
 
   methods: {
-    // 初始化监控
-    async initMonitor() {
-      // 健康检查
-      await this.checkHealth()
-
-      // 加载初始数据
-      await this.loadRealData()
-      await this.loadSignalHistory()
-      await this.loadPositionStatus()
-
-      // 启动定时器
-      this.startTimers()
+    initKlineCharts() {
+      this.initSingleChart('klineChartRef1', 'klineChart1')
+      this.initSingleChart('klineChartRef10', 'klineChart10')
+      this.initSingleChart('klineChartRef30', 'klineChart30')
+      this.initSingleChart('klineChartRef60', 'klineChart60')
     },
 
-    // 启动定时器
-    startTimers() {
-      // 每10秒更新实时数据
-      this.timer = setInterval(() => {
-        this.loadRealData()
-      }, 10000)
+    initSingleChart(refName, chartProp) {
+      if (!this.$refs[refName]) return
 
-      // 每60秒更新运行时间
-      setInterval(() => {
-        this.runTime = Date.now() - this.startTime
-      }, 60000)
-    },
+      const chart = echarts.init(this.$refs[refName])
+      this[chartProp] = chart
 
-    // 清理定时器
-    clearTimers() {
-      if (this.timer) {
-        clearInterval(this.timer)
-        this.timer = null
-      }
-    },
+      const option = {
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: {
+            type: 'cross',
+            label: {
+              backgroundColor: '#6a7985'
+            }
+          },
+          formatter: (params) => {
+            if (!params || params.length === 0) return ''
+            const data = params[0]
+            if (!data || !data.data || !data.data.value) return ''
 
-    // 健康检查
-    async checkHealth() {
-      try {
-        const res = await api.healthCheck()
-        if (res.code === 200) {
-          this.healthStatus = { type: 'success', text: '正常' }
-        } else {
-          this.healthStatus = { type: 'danger', text: '异常' }
-        }
-      } catch (error) {
-        this.healthStatus = { type: 'danger', text: '连接失败' }
-      }
-    },
+            const time = data.axisValue || '-'
+            const value = data.data.value
 
-    // 加载实时数据
-    async loadRealData() {
-      try {
-        this.isRefreshing = true
-        const res = await api.getRealData()
+            // 确保所有字段都有值
+            const open = value[1] !== undefined && value[1] !== null ? parseFloat(value[1]).toFixed(2) : '0.00'
+            const close = value[2] !== undefined && value[2] !== null ? parseFloat(value[2]).toFixed(2) : '0.00'
+            const high = value[3] !== undefined && value[3] !== null ? parseFloat(value[3]).toFixed(2) : '0.00'
+            const low = value[4] !== undefined && value[4] !== null ? parseFloat(value[4]).toFixed(2) : '0.00'
+            const volume = value[5] !== undefined && value[5] !== null ? parseFloat(value[5]).toFixed(2) : '0.00'
 
-        if (res.code === 200) {
-          const data = res.data
-          this.updateTime = Date.now()
-          console.log('实时数据:', data)
-          // 更新市场数据
-          this.marketStatus = data.market_status || '未知'
-          this.tradingSession = data.trading_session || '未知'
-          this.continuous = data.continuous_kline || 0
+            // 计算涨跌额
+            const priceChange = parseFloat(close) - parseFloat(open)
+            const changeAmount = priceChange.toFixed(2)
+            const amountColor = priceChange > 0 ? '#67c23a' : (priceChange < 0 ? '#f56c6c' : '#909399')
+            const changeSymbol = priceChange > 0 ? '+' : ''
 
-          // 更新10分钟数据
-          if (data.min10) {
-            this.min10 = data.min10
-            this.signal10 = data.signals?.['10min_signal'] || '观望'
+            // 价格变化百分比
+            let changePercentText = ''
+            if (value[6] !== undefined && value[6] !== null) {
+              const changeVal = parseFloat(value[6])
+              const changeColor = changeVal > 0 ? '#67c23a' : (changeVal < 0 ? '#f56c6c' : '#909399')
+              const changeSym = changeVal > 0 ? '+' : ''
+              changePercentText = `
+                <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #e4e7ed;">
+                  <strong>📈 相对前K线:</strong>
+                  <span style="color: ${changeColor}; font-weight: bold;">${changeSym}${changeVal.toFixed(4)}%</span>
+                </div>`
+            }
+
+            return `
+              <div style="padding: 12px; min-width: 240px; line-height: 1.6;">
+                <div style="font-weight: bold; margin-bottom: 8px; color: #303133; border-bottom: 2px solid #409eff; padding-bottom: 6px; font-size: 14px;">
+                  📊 K线数据详情
+                </div>
+                <div style="margin-bottom: 4px;"><strong>📅 时间:</strong> ${time}</div>
+                <div style="margin-bottom: 4px;"><strong>📈 开盘价:</strong> $${open}</div>
+                <div style="margin-bottom: 4px;"><strong>📉 收盘价:</strong> $${close}</div>
+                <div style="margin-bottom: 4px;"><strong>⬆️ 最高价:</strong> $${high}</div>
+                <div style="margin-bottom: 4px;"><strong>⬇️ 最低价:</strong> $${low}</div>
+                <div style="margin-bottom: 4px;"><strong>💰 涨跌额:</strong>
+                  <span style="color: ${amountColor}; font-weight: bold;">$${changeSymbol}${changeAmount}</span>
+                </div>
+                <div style="margin-bottom: 4px;"><strong>📊 成交量:</strong>
+                  <span style="color: #409eff; font-weight: bold;">${volume} ETH</span>
+                </div>
+                ${changePercentText}
+              </div>
+            `
+          },
+          backgroundColor: 'rgba(255, 255, 255, 0.98)',
+          borderColor: '#e4e7ed',
+          borderWidth: 1,
+          textStyle: {
+            color: '#606266',
+            fontSize: 13
+          },
+          extraCssText: 'box-shadow: 0 4px 16px 0 rgba(0, 0, 0, 0.15); border-radius: 8px;'
+        },
+        grid: {
+          left: '3%',
+          right: '4%',
+          bottom: '15%',
+          top: '10%',
+          containLabel: true
+        },
+        xAxis: {
+          type: 'category',
+          data: [],
+          boundaryGap: false,
+          axisLine: {
+            lineStyle: {
+              color: '#ddd'
+            }
+          },
+          splitLine: {
+            show: true,
+            lineStyle: {
+              color: '#f0f0f0'
+            }
+          },
+          axisLabel: {
+            rotate: 45,
+            interval: 'auto',
+            formatter: (value) => {
+              return value
+            }
           }
-
-          // 更新30分钟数据
-          if (data.min30) {
-            this.min30 = data.min30
-            this.signal30 = data.signals?.['30min_signal'] || '观望'
+        },
+        yAxis: {
+          type: 'value',
+          scale: true,
+          axisLine: {
+            lineStyle: {
+              color: '#ddd'
+            }
+          },
+          splitLine: {
+            show: true,
+            lineStyle: {
+              color: '#f0f0f0'
+            }
+          },
+          axisLabel: {
+            formatter: (value) => {
+              return '$' + value.toFixed(0)
+            }
           }
-
-          // 更新信号数据
-          if (data.signals) {
-            this.overallSignal = data.signals.overall_signal || '观望'
-            this.recommendedAction = data.signals.recommended_action || '保持观望'
-            this.volumeConfirm = data.signals.volume_confirm_10min || false
-
-            // 计算信号强度
-            this.signalStrength = this.overallSignal.startsWith('强烈') ? '强烈' : '普通'
-
-            // 计算建议仓位
-            const riskAssessment = data.signals.risk_assessment || {}
-            this.riskLevel = riskAssessment.risk_level || '中'
-            this.volatility10min = parseFloat(riskAssessment.volatility_10min) || 0
-            this.volatility30min = parseFloat(riskAssessment.volatility_30min) || 0
-            this.losingStreak = riskAssessment.losing_streak || 0
-
-            this.recommendedPosition = api.calculateRecommendedPosition(
-              this.riskLevel,
-              this.signalStrength
-            ) * 100
-          }
-
-          // 更新持仓盈亏
-          if (this.inPosition && this.currentPosition) {
-            this.calculateCurrentPL()
-          }
-        }
-      } catch (error) {
-        console.error('加载实时数据失败:', error)
-      } finally {
-        this.isRefreshing = false
-      }
-    },
-
-    // 加载信号历史
-    async loadSignalHistory() {
-      try {
-        const res = await api.getSignalHistory(10)
-        if (res.code === 200) {
-          this.signalHistory = res.data || []
-        }
-      } catch (error) {
-        console.error('加载信号历史失败:', error)
-      }
-    },
-
-    // 加载持仓状态
-    async loadPositionStatus() {
-      try {
-        const res = await api.getPositionStatus()
-        if (res.code === 200) {
-          this.inPosition = res.data.in_position || false
-          this.currentPosition = res.data.current_position || null
-
-          if (this.inPosition && this.currentPosition) {
-            this.calculateCurrentPL()
-          }
-        }
-      } catch (error) {
-        console.error('加载持仓状态失败:', error)
-      }
-    },
-
-    // 计算当前盈亏
-    calculateCurrentPL() {
-      if (!this.currentPosition || !this.min10.endPrice) return
-
-      const entryPrice = parseFloat(this.currentPosition.entry_price)
-      const currentPrice = parseFloat(this.min10.endPrice)
-
-      if (this.currentPosition.direction === '做多') {
-        this.currentPL = (currentPrice - entryPrice) / entryPrice * 100
-      } else {
-        this.currentPL = (entryPrice - currentPrice) / entryPrice * 100
-      }
-    },
-
-    // 强制刷新
-    forceRefresh() {
-      this.loadRealData()
-      this.checkHealth()
-    },
-
-    // 开仓
-    async openPosition(direction) {
-      try {
-        this.openingPosition = direction
-
-        // 确认对话框
-        await this.$confirm(
-          `确定要${direction}吗？\n建议仓位: ${this.recommendedPosition}%`,
-          '确认开仓',
+        },
+        dataZoom: [
           {
-            confirmButtonText: '确定',
-            cancelButtonText: '取消',
-            type: 'warning'
+            type: 'inside',
+            start: 0,
+            end: 100
+          },
+          {
+            show: true,
+            type: 'slider',
+            top: '90%',
+            start: 0,
+            end: 100
           }
-        )
-
-        const res = await api.openPosition(direction, this.recommendedPosition / 100)
-        if (res.code === 200) {
-          this.$message.success('开仓成功')
-          await this.loadPositionStatus()
-        } else {
-          this.$message.error(res.msg || '开仓失败')
-        }
-      } catch (error) {
-        if (error !== 'cancel') {
-          this.$message.error('开仓异常: ' + error.message)
-        }
-      } finally {
-        this.openingPosition = null
+        ],
+        series: [
+          {
+            name: 'K线',
+            type: 'candlestick',
+            data: [],
+            itemStyle: {
+              color: '#67c23a',
+              color0: '#f56c6c',
+              borderColor: '#67c23a',
+              borderColor0: '#f56c6c'
+            },
+            markPoint: {
+              symbol: 'pin',
+              symbolSize: 45,
+              label: {
+                show: true,
+                fontSize: 9,
+                formatter: (param) => {
+                  if (!param.value) return ''
+                  return param.value > 0 ? `+${param.value.toFixed(3)}%` : `${param.value.toFixed(3)}%`
+                }
+              },
+              data: []
+            }
+          }
+        ]
       }
+
+      chart.setOption(option)
     },
 
-    // 平仓
-    async closePosition() {
+    async loadAllKlineData() {
       try {
-        this.closingPosition = true
+        this.klineLoading = true
 
-        await this.$confirm('确定要平仓吗？', '确认平仓', {
-          confirmButtonText: '确定',
-          cancelButtonText: '取消',
-          type: 'warning'
+        const oneMinLimit = 1008
+
+        console.log('开始加载K线数据...')
+
+        const [res1, res10, res30, res60] = await Promise.all([
+          api.getRawKlineData(oneMinLimit, '1m'),
+          api.getAggregatedKlineData(oneMinLimit, '10min'),
+          api.getAggregatedKlineData(oneMinLimit, '30min'),
+          api.getAggregatedKlineData(oneMinLimit, '60min')
+        ])
+
+        console.log('API响应:', { res1, res10, res30, res60 })
+
+        let klineArray1 = []
+        let klineArray10 = []
+        let klineArray30 = []
+        let klineArray60 = []
+
+        if (res1 && res1.code === 200 && res1.data) {
+          klineArray1 = Array.isArray(res1.data) ? res1.data : []
+          console.log('1分钟数据:', klineArray1.length)
+        } else {
+          console.warn('1分钟数据获取失败:', res1)
+        }
+
+        if (res10 && res10.code === 200 && res10.data) {
+          klineArray10 = res10.data.rolling_10min || res10.data.natural_10min || []
+          console.log('10分钟数据:', klineArray10.length)
+        } else {
+          console.warn('10分钟数据获取失败:', res10)
+        }
+
+        if (res30 && res30.code === 200 && res30.data) {
+          klineArray30 = res30.data.rolling_30min || res30.data.natural_30min || []
+          console.log('30分钟数据:', klineArray30.length)
+        } else {
+          console.warn('30分钟数据获取失败:', res30)
+        }
+
+        if (res60 && res60.code === 200 && res60.data) {
+          klineArray60 = res60.data.rolling_60min || res60.data.natural_60min || []
+          console.log('60分钟数据:', klineArray60.length)
+        } else {
+          console.warn('60分钟数据获取失败:', res60)
+        }
+
+        if (klineArray1.length > 100) {
+          klineArray1 = klineArray1.slice(-100)
+        }
+        if (klineArray10.length > 100) {
+          klineArray10 = klineArray10.slice(-100)
+        }
+        if (klineArray30.length > 100) {
+          klineArray30 = klineArray30.slice(-100)
+        }
+        if (klineArray60.length > 100) {
+          klineArray60 = klineArray60.slice(-100)
+        }
+
+        if (klineArray1.length > 0) {
+          this.klineDataList1 = this.processKlineData(klineArray1)
+          this.updateSingleChart(this.klineChart1, this.klineDataList1)
+        }
+
+        if (klineArray10.length > 0) {
+          this.klineDataList10 = this.processKlineData(klineArray10)
+          this.updateSingleChart(this.klineChart10, this.klineDataList10)
+        }
+
+        if (klineArray30.length > 0) {
+          this.klineDataList30 = this.processKlineData(klineArray30)
+          this.updateSingleChart(this.klineChart30, this.klineDataList30)
+        }
+
+        if (klineArray60.length > 0) {
+          this.klineDataList60 = this.processKlineData(klineArray60)
+          this.updateSingleChart(this.klineChart60, this.klineDataList60)
+        }
+
+        this.updateTime = Date.now()
+
+        if (this.klineDataList1.length === 0 &&
+            this.klineDataList10.length === 0 &&
+            this.klineDataList30.length === 0 &&
+            this.klineDataList60.length === 0) {
+          this.$message.warning('暂无K线数据')
+        } else {
+          console.log('K线数据加载完成（实时模式）:', {
+            '1分钟': this.klineDataList1.length + '根',
+            '10分钟': this.klineDataList10.length + '根',
+            '30分钟': this.klineDataList30.length + '根',
+            '60分钟': this.klineDataList60.length + '根'
+          })
+        }
+      } catch (error) {
+        console.error('加载K线数据失败:', error)
+        console.error('错误详情:', {
+          message: error.message,
+          code: error.code,
+          response: error.response,
+          config: error.config
         })
 
-        const res = await api.closePosition()
-        if (res.code === 200) {
-          this.$message.success('平仓成功')
-          await this.loadPositionStatus()
-        } else {
-          this.$message.error(res.msg || '平仓失败')
+        let errorMessage = '加载K线数据失败'
+        if (error.response) {
+          errorMessage += `: ${error.response.status} ${error.response.statusText}`
+        } else if (error.message) {
+          errorMessage += `: ${error.message}`
         }
-      } catch (error) {
-        if (error !== 'cancel') {
-          this.$message.error('平仓异常: ' + error.message)
-        }
+
+        this.$message.error(errorMessage)
       } finally {
-        this.closingPosition = false
+        this.klineLoading = false
       }
     },
 
-    // 运行回测
-    async runBackTest(strategy) {
-      try {
-        this.backtestLoading = strategy
+    processKlineData(rawData) {
+      const processed = []
 
-        let res
-        switch (strategy) {
-          case 'strategyA':
-            res = await api.backtestStrategyA(2000)
-            break
-          case 'strategyB':
-            res = await api.backtestStrategyB(2000)
-            break
-          case 'comprehensive':
-            res = await api.comprehensiveBackTest(2000)
-            break
-        }
+      rawData.forEach((item, index) => {
+        const open = parseFloat(item.startPrice || item.start_price || 0)
+        const close = parseFloat(item.endPrice || item.end_price || 0)
+        const high = parseFloat(item.maxPrice || item.max_price || 0)
+        const low = parseFloat(item.minPrice || item.min_price || 0)
+        const volume = parseFloat(item.calcCount || item.volume || 0)
+        const timestamp = item.startTime || item.start_time || item.timestamp || Date.now()
 
-        if (res.code === 200) {
-          if (strategy === 'comprehensive') {
-            // 综合回测显示策略A的结果
-            this.backtestResult = res.data.strategyA
-          } else {
-            this.backtestResult = res.data
+        let changePercent = 0
+        if (index > 0) {
+          const prevItem = rawData[index - 1]
+          const prevClose = parseFloat(prevItem.endPrice || prevItem.end_price || 0)
+          if (prevClose > 0) {
+            changePercent = ((close - prevClose) / prevClose) * 100
           }
-          this.$message.success('回测完成')
-        } else {
-          this.$message.error(res.msg || '回测失败')
         }
-      } catch (error) {
-        this.$message.error('回测异常: ' + error.message)
-      } finally {
-        this.backtestLoading = null
+
+        processed.push([
+          timestamp,
+          open,
+          close,
+          high,
+          low,
+          volume,
+          changePercent
+        ])
+      })
+
+      return processed
+    },
+
+    updateSingleChart(chart, dataList) {
+      if (!chart || dataList.length === 0) return
+
+      const times = dataList.map(item => {
+        const date = new Date(item[0])
+        const month = (date.getMonth() + 1).toString().padStart(2, '0')
+        const day = date.getDate().toString().padStart(2, '0')
+        const hours = date.getHours().toString().padStart(2, '0')
+        const minutes = date.getMinutes().toString().padStart(2, '0')
+
+        // 统一时间格式，确保对齐
+        return `${month}/${day} ${hours}:${minutes}`
+      })
+
+      const klineData = dataList.map((item, index) => ({
+        value: [
+          item[1],
+          item[2],
+          item[3],
+          item[4],
+          item[5],
+          item[6]
+        ],
+        itemStyle: {}
+      }))
+
+      const markPointData = []
+      dataList.forEach((item, index) => {
+        if (index > 0) {
+          const changePercent = item[6]
+          if (Math.abs(changePercent) > 0.05) {
+            markPointData.push({
+              name: '价格变化',
+              coord: [index, item[3]],
+              value: changePercent,
+              itemStyle: {
+                color: changePercent > 0 ? '#67c23a' : '#f56c6c'
+              }
+            })
+          }
+        }
+      })
+
+      const option = {
+        xAxis: {
+          data: times,
+          min: 0,
+          max: times.length - 1
+        },
+        series: [
+          {
+            data: klineData,
+            markPoint: {
+              data: markPointData
+            }
+          }
+        ]
+      }
+
+      chart.setOption(option)
+    },
+
+    disposeCharts() {
+      if (this.klineChart1) {
+        this.klineChart1.dispose()
+        this.klineChart1 = null
+      }
+      if (this.klineChart10) {
+        this.klineChart10.dispose()
+        this.klineChart10 = null
+      }
+      if (this.klineChart30) {
+        this.klineChart30.dispose()
+        this.klineChart30 = null
+      }
+      if (this.klineChart60) {
+        this.klineChart60.dispose()
+        this.klineChart60 = null
       }
     },
 
-    // 格式化工具函数
     formatTime(timestamp) {
       if (!timestamp) return '-'
       const date = new Date(timestamp)
       return date.toLocaleString('zh-CN')
-    },
-
-    formatDuration(ms) {
-      if (!ms) return '0秒'
-      const seconds = Math.floor(ms / 1000)
-      const minutes = Math.floor(seconds / 60)
-      const hours = Math.floor(minutes / 60)
-      const days = Math.floor(hours / 24)
-
-      if (days > 0) return `${days}天${hours % 24}小时`
-      if (hours > 0) return `${hours}小时${minutes % 60}分钟`
-      if (minutes > 0) return `${minutes}分钟${seconds % 60}秒`
-      return `${seconds}秒`
-    },
-
-    formatPercent(value, decimals = 4) {
-      return api.formatPercent(value, decimals)
-    },
-
-    formatPrice(price, decimals = 2) {
-      return api.formatPrice(price, decimals)
-    },
-
-    formatVolume(volume) {
-      if (!volume) return '0'
-      const num = parseFloat(volume)
-      if (num >= 1000) {
-        return (num / 1000).toFixed(1) + 'K'
-      }
-      return num.toFixed(1)
-    },
-
-    // 样式类获取函数
-    getRiskType(riskLevel) {
-      switch (riskLevel) {
-        case '高': return 'danger'
-        case '中': return 'warning'
-        case '低': return 'success'
-        default: return 'info'
-      }
-    },
-
-    getMarketStatusClass(status) {
-      if (status.includes('震荡')) return 'ranging'
-      if (status.includes('趋势')) return 'trending'
-      if (status.includes('平衡')) return 'balanced'
-      return 'unknown'
-    },
-
-    getSignalType(signal) {
-      return api.getSignalClass(signal)
-    },
-
-    getSignalStrengthClass(strength) {
-      return strength === '强烈' ? 'strong' : 'normal'
     }
   }
 }
 </script>
 
 <style scoped>
-.monitor-container {
+.kline-monitor-container {
   padding: 20px;
   background: #f5f7fa;
   min-height: 100vh;
   font-family: 'Helvetica Neue', Arial, sans-serif;
 }
 
-/* 头部样式 */
 .header {
   margin-bottom: 24px;
 }
@@ -882,34 +625,16 @@ export default {
   to { transform: rotate(360deg); }
 }
 
-/* 主要内容布局 */
-.main-content {
-  display: flex;
-  gap: 24px;
-  margin-bottom: 24px;
-}
-
-.left-panel {
-  flex: 2;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.right-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 400px;
-}
-
-/* 卡片通用样式 */
 .card {
   background: #fff;
   border-radius: 12px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
   overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.kline-chart-card:last-child {
+  margin-bottom: 0;
 }
 
 .card-header {
@@ -934,442 +659,59 @@ export default {
   padding: 20px;
 }
 
-/* 市场概览 */
-.overview-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
-
-.overview-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.overview-item label {
-  font-size: 12px;
-  color: #909399;
-}
-
-.overview-item span {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.overview-item span.warning {
-  color: #e6a23c;
-}
-
-.overview-item span.danger {
-  color: #f56c6c;
-}
-
-.overview-item span.normal {
-  color: #67c23a;
-}
-
-/* 价格网格 */
-.price-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.price-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.price-item:last-child {
-  border-bottom: none;
-}
-
-.price-item label {
-  color: #606266;
-  font-size: 13px;
-}
-
-.price-item .price {
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.price-item .price.high {
-  color: #f56c6c;
-}
-
-.price-item .price.low {
-  color: #67c23a;
-}
-
-.price-item .up {
-  color: #f56c6c;
-  font-weight: 600;
-}
-
-.price-item .down {
-  color: #67c23a;
-  font-weight: 600;
-}
-
-/* 策略信息 */
-.strategy-info {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  padding: 12px;
-  background: #f9f9f9;
+.kline-chart {
+  width: 100%;
+  height: 450px;
+  background: #fafbfc;
   border-radius: 8px;
-  margin-top: 16px;
+  padding: 10px;
 }
 
-.strategy-param {
+.chart-legend {
   display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-}
-
-.strategy-param label {
-  color: #909399;
-}
-
-.strategy-param span {
-  color: #303133;
-  font-weight: 500;
-}
-
-/* 信号分析 */
-.signal-analysis {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.analysis-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-}
-
-.analysis-item label {
-  color: #606266;
-  font-size: 14px;
-}
-
-.analysis-item span {
-  font-weight: 500;
-}
-
-.analysis-item span.confirm {
-  color: #67c23a;
-}
-
-.analysis-item span.no-confirm {
-  color: #f56c6c;
-}
-
-.analysis-item span.recommended-action {
-  color: #409eff;
-  font-weight: 600;
-}
-
-.analysis-item span.recommended-position {
-  color: #e6a23c;
-  font-weight: 600;
-}
-
-.analysis-item span.strong {
-  color: #f56c6c;
-  font-weight: 600;
-}
-
-.analysis-item span.normal {
-  color: #909399;
-}
-
-/* 操作按钮 */
-.action-buttons {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.action-buttons .el-button {
-  flex: 1;
-  padding: 12px 0;
-}
-
-/* 持仓信息 */
-.position-info {
-  padding: 16px;
-  background: #f9f9f9;
-  border-radius: 8px;
-  border: 1px solid #ebeef5;
-}
-
-.position-info h4 {
-  margin: 0 0 12px 0;
-  color: #303133;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.position-details {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-}
-
-.detail-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 13px;
-}
-
-.detail-item label {
-  color: #909399;
-}
-
-.detail-item span {
-  font-weight: 500;
-}
-
-.detail-item span.long {
-  color: #67c23a;
-}
-
-.detail-item span.short {
-  color: #f56c6c;
-}
-
-.detail-item span.profit {
-  color: #67c23a;
-}
-
-.detail-item span.loss {
-  color: #f56c6c;
-}
-
-.detail-item span.stop-loss {
-  color: #f56c6c;
-  font-weight: 600;
-}
-
-.detail-item span.take-profit {
-  color: #67c23a;
-  font-weight: 600;
-}
-
-/* 回测结果 */
-.backtest-result {
+  justify-content: center;
+  gap: 24px;
+  margin-top: 12px;
   padding: 12px;
   background: #f9f9f9;
   border-radius: 8px;
 }
 
-.result-header {
+.legend-item {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.result-header h4 {
-  margin: 0;
-  color: #303133;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.result-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-}
-
-.result-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.result-item label {
-  font-size: 12px;
-  color: #909399;
-}
-
-.result-item span {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.result-item span.profit {
-  color: #67c23a;
-}
-
-.result-item span.loss {
-  color: #f56c6c;
-}
-
-.result-item span.drawdown {
-  color: #e6a23c;
-}
-
-.result-item span.good {
-  color: #67c23a;
-}
-
-.result-item span.bad {
-  color: #f56c6c;
-}
-
-.no-result {
-  text-align: center;
-  padding: 40px 20px;
-  color: #909399;
-}
-
-/* 信号历史 */
-.history-list {
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.history-item {
-  padding: 12px 0;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.history-item:last-child {
-  border-bottom: none;
-}
-
-.history-item .time {
-  font-size: 12px;
-  color: #909399;
-  margin-bottom: 4px;
-}
-
-.history-item .signal {
-  margin-bottom: 4px;
-}
-
-.history-item .details {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
-  color: #606266;
-}
-
-/* 底部统计 */
-.footer {
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-}
-
-.statistics {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 20px;
-}
-
-.stat-item {
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 12px;
-  background: #f9f9f9;
-  border-radius: 8px;
+  font-size: 13px;
+  color: #606266;
 }
 
-.stat-item label {
-  font-size: 12px;
-  color: #909399;
+.legend-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  display: inline-block;
 }
 
-.stat-item span {
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
+.legend-color.up {
+  background: #67c23a;
 }
 
-.stat-item span.good {
-  color: #67c23a;
+.legend-color.down {
+  background: #f56c6c;
 }
 
-.stat-item span.bad {
-  color: #f56c6c;
-}
-
-.stat-item span.profit {
-  color: #67c23a;
-}
-
-.stat-item span.loss {
-  color: #f56c6c;
-}
-
-.stat-item span.drawdown {
-  color: #e6a23c;
-}
-
-/* 响应式设计 */
-@media (max-width: 1200px) {
-  .main-content {
-    flex-direction: column;
-  }
-
-  .right-panel {
-    min-width: auto;
-  }
-
-  .overview-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .statistics {
-    grid-template-columns: repeat(3, 1fr);
-  }
+.legend-color.equal {
+  background: #909399;
 }
 
 @media (max-width: 768px) {
-  .overview-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .price-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .strategy-info {
-    grid-template-columns: 1fr;
-  }
-
-  .position-details {
-    grid-template-columns: 1fr;
-  }
-
-  .result-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .statistics {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .action-buttons {
+  .chart-legend {
     flex-direction: column;
+    gap: 8px;
+  }
+
+  .kline-chart {
+    height: 350px;
   }
 }
 </style>
