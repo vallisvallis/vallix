@@ -262,8 +262,8 @@ public class VallisusdtController extends BaseController {
             
             log.info("BTC近一年数据保存完成，成功: {} 条，失败: {} 条", totalSuccess, totalFail);
             return AjaxResult.success(
-                String.format("保存完成，成功 %d 条，失败 %d 条", successCount, failCount),
-                getResultMap(successCount, failCount)
+                String.format("保存完成，成功 %d 条，失败 %d 条", totalSuccess, totalFail),
+                getResultMap(totalSuccess, totalFail)
             );
             
         } catch (Exception e) {
@@ -312,8 +312,8 @@ public class VallisusdtController extends BaseController {
             
             log.info("BTC {}天数据保存完成，成功: {} 条，失败: {} 条", days, totalSuccess, totalFail);
             return AjaxResult.success(
-                String.format("保存完成，成功 %d 条，失败 %d 条", successCount, failCount),
-                getResultMap(successCount, failCount)
+                String.format("保存完成，成功 %d 条，失败 %d 条", totalSuccess, totalFail),
+                getResultMap(totalSuccess, totalFail)
             );
             
         } catch (Exception e) {

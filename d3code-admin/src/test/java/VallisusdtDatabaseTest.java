@@ -188,6 +188,7 @@ public class VallisusdtDatabaseTest {
             long duration = endTime - startTime;
             
             log.info("========== BTC近一年数据保存完成! ==========");
+            int failCount = dataList.size() - successCount;
             log.info("📈 总记录数: {}", dataList.size());
             log.info("✅ 成功: {} 条", successCount);
             log.info("❌ 失败: {} 条", failCount);
