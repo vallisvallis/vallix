@@ -5,74 +5,67 @@
 <mapper namespace="com.alphay.boot.bpm.mapper.VallisusdtMapper">
     <resultMap type="Vallisusdt" id="VallisusdtResult">
         <result property="id" column="id"/>
-        <result property="startTime" column="start_time"/>
-        <result property="endTime" column="end_time"/>
-        <result property="startPrice" column="start_price"/>
-        <result property="maxPrice" column="max_price"/>
-        <result property="minPrice" column="min_price"/>
-        <result property="endPrice" column="end_price"/>
-        <result property="calcCount" column="calc_count"/>
-        <result property="priceCount" column="price_count"/>
-        <result property="numCount" column="num_count"/>
-        <result property="zdBuyCount" column="zd_buy_count"/>
-        <result property="zdSellCount" column="zd_sell_count"/>
-        <result property="resultStr" column="result_str"/>
+        <result property="openTime" column="open_time"/>
+        <result property="open" column="open"/>
+        <result property="high" column="high"/>
+        <result property="low" column="low"/>
+        <result property="close" column="close"/>
+        <result property="volume" column="volume"/>
+        <result property="closeTime" column="close_time"/>
+        <result property="quoteVolume" column="quote_volume"/>
+        <result property="trades" column="trades"/>
+        <result property="takerBuyBase" column="taker_buy_base"/>
+        <result property="takerBuyQuote" column="taker_buy_quote"/>
         <result property="createTime" column="create_time"/>
         <result property="updateTime" column="update_time"/>
         <result property="deleted" column="deleted"/>
         <result property="createBy" column="create_by"/>
         <result property="updateBy" column="update_by"/>
         <result property="remark" column="remark"/>
-        <result property="resultPrice" column="result_price"/>
     </resultMap>
 
     <sql id="selectVallisusdtVo">
-        select id,result_price, start_time, end_time, start_price, max_price, min_price, end_price, calc_count,
-        price_count, num_count, zd_buy_count, zd_sell_count, result_str, create_time, update_time, deleted, create_by,
-        update_by, remark from vallisusdt
+        select id, open_time, open, high, low, close, volume, close_time,
+               quote_volume, trades, taker_buy_base, taker_buy_quote,
+               create_time, update_time, deleted, create_by, update_by, remark
+        from vallisusdt
     </sql>
 
     <select id="selectVallisusdtList" parameterType="Vallisusdt" resultMap="VallisusdtResult">
         <include refid="selectVallisusdtVo"/>
         <where>
-            <if test="startTime != null ">
-                and start_time = #{startTime}
+            <if test="openTime != null ">
+                and open_time = #{openTime}
             </if>
-            <if test="endTime != null ">
-                and end_time = #{endTime}
+            <if test="closeTime != null ">
+                and close_time = #{closeTime}
             </if>
-            <if test="startPrice != null  and startPrice != ''">
-                and start_price = #{startPrice}
+            <if test="open != null  and open != ''">
+                and open = #{open}
             </if>
-            <if test="maxPrice != null  and maxPrice != ''">
-                and max_price = #{maxPrice}
+            <if test="high != null  and high != ''">
+                and high = #{high}
             </if>
-            <if test="minPrice != null  and minPrice != ''">
-                and min_price = #{minPrice}
+            <if test="low != null  and low != ''">
+                and low = #{low}
             </if>
-            <if test="endPrice != null  and endPrice != ''">
-                and end_price = #{endPrice}
+            <if test="close != null  and close != ''">
+                and close = #{close}
             </if>
-            <if test="calcCount != null  and calcCount != ''">
-                and calc_count = #{calcCount}
+            <if test="volume != null  and volume != ''">
+                and volume = #{volume}
             </if>
-            <if test="priceCount != null  and priceCount != ''">
-                and price_count = #{priceCount}
+            <if test="quoteVolume != null  and quoteVolume != ''">
+                and quote_volume = #{quoteVolume}
             </if>
-            <if test="numCount != null  and numCount != ''">
-                and num_count = #{numCount}
+            <if test="trades != null">
+                and trades = #{trades}
             </if>
-            <if test="zdBuyCount != null  and zdBuyCount != ''">
-                and zd_buy_count = #{zdBuyCount}
+            <if test="takerBuyBase != null  and takerBuyBase != ''">
+                and taker_buy_base = #{takerBuyBase}
             </if>
-            <if test="zdSellCount != null  and zdSellCount != ''">
-                and zd_sell_count = #{zdSellCount}
-            </if>
-            <if test="resultStr != null  and resultStr != ''">
-                and result_str = #{resultStr}
-            </if>
-            <if test="resultPrice != null  and resultPrice != ''">
-                and result_price = #{resultPrice}
+            <if test="takerBuyQuote != null  and takerBuyQuote != ''">
+                and taker_buy_quote = #{takerBuyQuote}
             </if>
             <if test="deleted != null">
                 and deleted = #{deleted}
