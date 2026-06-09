@@ -4,6 +4,7 @@ import com.alphay.boot.common.annotation.Excel;
 import com.alphay.boot.common.core.domain.BaseEntity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -24,6 +25,7 @@ import java.util.Date;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
+@TableName("vallisusdt")
 public class Vallisusdt extends BaseEntity {
     private static final long serialVersionUID = 1L;
 
@@ -94,6 +96,7 @@ public class Vallisusdt extends BaseEntity {
     private String resultStr;
 
     private String resultPrice;
+
 
     public Double getSp() {
         return Double.parseDouble(this.startPrice);

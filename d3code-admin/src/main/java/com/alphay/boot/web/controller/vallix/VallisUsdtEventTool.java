@@ -32,7 +32,6 @@ public class VallisUsdtEventTool {
     public List<Vallisusdt> getEth1minKline(int limit) {
         String url = "https://data-api.binance.vision/api/v3/klines?symbol=ETHUSDT&interval=1m&limit=" + limit;
         try {
-            // ✅【唯一修改点】用 Object[][] 接收币安的真实返回格式
             Object[][] dataArray = restTemplate.getForObject(url, Object[][].class);
 
             if (dataArray == null || dataArray.length == 0) {
@@ -40,16 +39,41 @@ public class VallisUsdtEventTool {
             }
 
             List<Vallisusdt> result = new ArrayList<>();
-            // ✅ 遍历二维数组
             for (Object[] arr : dataArray) {
                 result.add(convertToVallisusdt(arr));
             }
 
-            log.info("成功获取K线数量：{}", result.size());
+            log.info("成功获取ETH K线数量：{}", result.size());
             return result;
 
         } catch (Exception e) {
-            log.error("拉取币安K线数据异常", e);
+            log.error("拉取币安ETH K线数据异常", e);
+            return new ArrayList<>();
+        }
+    }
+
+    /**
+     * 获取币安 BTC/USDT 1分钟K线
+     */
+    public List<Vallisusdt> getBtc1minKline(int limit) {
+        String url = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=" + limit;
+        try {
+            Object[][] dataArray = restTemplate.getForObject(url, Object[][].class);
+
+            if (dataArray == null || dataArray.length == 0) {
+                return new ArrayList<>();
+            }
+
+            List<Vallisusdt> result = new ArrayList<>();
+            for (Object[] arr : dataArray) {
+                result.add(convertToVallisusdt(arr));
+            }
+
+            log.info("成功获取BTC K线数量：{}", result.size());
+            return result;
+
+        } catch (Exception e) {
+            log.error("拉取币安BTC K线数据异常", e);
             return new ArrayList<>();
         }
     }

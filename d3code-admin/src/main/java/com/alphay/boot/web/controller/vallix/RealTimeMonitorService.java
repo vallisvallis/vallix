@@ -34,7 +34,7 @@ public class RealTimeMonitorService {
     /**
      * 主监控任务（每10秒执行一次）
      */
-    @Scheduled(fixedRate = 10000)
+    // @Scheduled(fixedRate = 10000)  // 已禁用该定时任务
     public void monitorTask() {
         try {
             // 1. 获取实时数据

@@ -43,8 +43,18 @@ export const constantRoutes = [
     hidden: true
   },
   {
+    path: '/btcusdt',
+    component: () => import('@/views/btcusdt/btcusdt'),
+    hidden: true
+  },
+  {
     path: '/vallisusdt',
     component: () => import('@/views/vallisUsdt/vallisUsdt'),
+    hidden: true
+  },
+  {
+    path: '/btcv',
+    component: () => import('@/views/btcusdt/btcv'),
     hidden: true
   },
   {

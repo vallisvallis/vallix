@@ -3,7 +3,7 @@
     <!-- 头部标题 -->
     <div class="header">
       <div class="title-section">
-        <h1>ETH/USDT K线监控（近一周）</h1>
+        <h1>BTC/USDT K线监控（近一周）</h1>
         <div class="status-bar">
           <span class="update-time">最后更新: {{ formatTime(updateTime) }}</span>
           <span class="auto-refresh-status" :class="{ 'enabled': autoRefreshEnabled }">
@@ -197,11 +197,11 @@
 </template>
 
 <script>
-import * as api from '@/api/tool/vallisusdt/vallisusdt'
+import * as api from '@/api/tool/btcusdt/btcusdt'
 import * as echarts from 'echarts'
 
 export default {
-  name: 'VallisusdtKlineMonitor',
+  name: 'BtcusdtKlineMonitor',
   data() {
     return {
       updateTime: null,
@@ -214,8 +214,8 @@ export default {
       klineChart10: null,
       klineChart30: null,
       klineChart60: null,
-      refreshTimer: null, // 定时刷新定时器
-      autoRefreshEnabled: true // 是否启用自动刷新
+      refreshTimer: null,
+      autoRefreshEnabled: true
     }
   },
 
@@ -223,7 +223,6 @@ export default {
     this.$nextTick(() => {
       this.initKlineCharts()
       this.loadAllKlineData()
-      // 启动自动刷新（每60秒）
       this.startAutoRefresh()
     })
   },
@@ -243,7 +242,6 @@ export default {
     calculateMA(periodType, maPeriod) {
       let dataList = []
 
-      // 根据周期类型选择对应的数据
       switch (periodType) {
         case 1:
           dataList = this.klineDataList1
@@ -261,32 +259,25 @@ export default {
           return { price: '-', diffPercent: '-', diffClass: '' }
       }
 
-      // 如果数据不足，返回默认值
       if (!dataList || dataList.length < maPeriod) {
         return { price: '-', diffPercent: '-', diffClass: '' }
       }
 
-      // 获取最新的数据点
-      const currentPrice = parseFloat(dataList[dataList.length - 1][2]) // 收盘价
+      const currentPrice = parseFloat(dataList[dataList.length - 1][2])
 
-      // 计算MA周期的平均价（取最后maPeriod个数据点的收盘价平均值）
       let sum = 0
       for (let i = dataList.length - maPeriod; i < dataList.length; i++) {
-        sum += parseFloat(dataList[i][2]) // 收盘价在索引2的位置
+        sum += parseFloat(dataList[i][2])
       }
       const maPrice = sum / maPeriod
 
-      // 计算差值百分比
       const diffPercent = ((currentPrice - maPrice) / maPrice) * 100
 
-      // 格式化价格
       const formattedPrice = '$' + maPrice.toFixed(2)
 
-      // 格式化差值百分比
       const sign = diffPercent > 0 ? '+' : ''
       const formattedDiff = sign + diffPercent.toFixed(4) + '%'
 
-      // 确定样式类
       const diffClass = diffPercent > 0 ? 'positive' : (diffPercent < 0 ? 'negative' : 'neutral')
 
       return {
@@ -326,20 +317,17 @@ export default {
             const time = data.axisValue || '-'
             const value = data.data.value
 
-            // 确保所有字段都有值
             const open = value[1] !== undefined && value[1] !== null ? parseFloat(value[1]).toFixed(2) : '0.00'
             const close = value[2] !== undefined && value[2] !== null ? parseFloat(value[2]).toFixed(2) : '0.00'
             const high = value[3] !== undefined && value[3] !== null ? parseFloat(value[3]).toFixed(2) : '0.00'
             const low = value[4] !== undefined && value[4] !== null ? parseFloat(value[4]).toFixed(2) : '0.00'
             const volume = value[5] !== undefined && value[5] !== null ? parseFloat(value[5]).toFixed(2) : '0.00'
 
-            // 计算涨跌额
             const priceChange = parseFloat(close) - parseFloat(open)
             const changeAmount = priceChange.toFixed(2)
             const amountColor = priceChange > 0 ? '#67c23a' : (priceChange < 0 ? '#f56c6c' : '#909399')
             const changeSymbol = priceChange > 0 ? '+' : ''
 
-            // 价格变化百分比
             let changePercentText = ''
             if (value[6] !== undefined && value[6] !== null) {
               const changeVal = parseFloat(value[6])
@@ -366,7 +354,7 @@ export default {
                   <span style="color: ${amountColor}; font-weight: bold;">$${changeSymbol}${changeAmount}</span>
                 </div>
                 <div style="margin-bottom: 4px;"><strong>📊 成交量:</strong>
-                  <span style="color: #409eff; font-weight: bold;">${volume} ETH</span>
+                  <span style="color: #409eff; font-weight: bold;">${volume} BTC</span>
                 </div>
                 ${changePercentText}
               </div>
@@ -482,44 +470,40 @@ export default {
 
         const oneMinLimit = 1008
 
-        console.log('开始加载K线数据...')
+        console.log('开始加载BTC K线数据...')
 
-        // 只获取一次1分钟原始数据
-        const res1 = await api.getRawKlineData(oneMinLimit, '1m')
+        const res1 = await api.getBtcRawKlineData(oneMinLimit, '1m')
 
-        console.log('1分钟API响应:', res1)
+        console.log('BTC 1分钟API响应:', res1)
 
         let klineArray1 = []
 
         if (res1 && res1.code === 200 && res1.data) {
           klineArray1 = Array.isArray(res1.data) ? res1.data : []
-          console.log('1分钟原始数据:', klineArray1.length)
+          console.log('BTC 1分钟原始数据:', klineArray1.length)
         } else {
-          console.warn('1分钟数据获取失败:', res1)
-          throw new Error('无法获取1分钟K线数据')
+          console.warn('BTC 1分钟数据获取失败:', res1)
+          throw new Error('无法获取BTC 1分钟K线数据')
         }
 
-        // 在前端实时聚合其他周期
-        console.log('开始在前端聚合K线数据...')
+        console.log('开始在前端聚合BTC K线数据...')
         const klineArray10 = this.aggregateKlineData(klineArray1, 10)
         const klineArray30 = this.aggregateKlineData(klineArray1, 30)
         const klineArray60 = this.aggregateKlineData(klineArray1, 60)
 
-        console.log('聚合完成:', {
+        console.log('BTC聚合完成:', {
           '1分钟': klineArray1.length,
           '10分钟': klineArray10.length,
           '30分钟': klineArray30.length,
           '60分钟': klineArray60.length
         })
 
-        // 限制显示数量（最近100根）
         const displayLimit = 100
         const display1 = klineArray1.slice(-displayLimit)
         const display10 = klineArray10.slice(-displayLimit)
         const display30 = klineArray30.slice(-displayLimit)
         const display60 = klineArray60.slice(-displayLimit)
 
-        // 处理并更新图表
         if (display1.length > 0) {
           this.klineDataList1 = this.processKlineData(display1)
           this.updateSingleChart(this.klineChart1, this.klineDataList1)
@@ -542,14 +526,14 @@ export default {
 
         this.updateTime = Date.now()
 
-        console.log('K线数据加载完成（实时模式）:', {
+        console.log('BTC K线数据加载完成（实时模式）:', {
           '1分钟': this.klineDataList1.length + '根',
           '10分钟': this.klineDataList10.length + '根',
           '30分钟': this.klineDataList30.length + '根',
           '60分钟': this.klineDataList60.length + '根'
         })
       } catch (error) {
-        console.error('加载K线数据失败:', error)
+        console.error('加载BTC K线数据失败:', error)
         console.error('错误详情:', {
           message: error.message,
           code: error.code,
@@ -557,7 +541,7 @@ export default {
           config: error.config
         })
 
-        let errorMessage = '加载K线数据失败'
+        let errorMessage = '加载BTC K线数据失败'
         if (error.response) {
           errorMessage += `: ${error.response.status} ${error.response.statusText}`
         } else if (error.message) {
@@ -570,34 +554,25 @@ export default {
       }
     },
 
-    /**
-     * 在前端聚合K线数据
-     * @param {Array} oneMinData - 1分钟K线数组
-     * @param {number} period - 聚合周期（分钟）
-     * @returns {Array} 聚合后的K线数组
-     */
     aggregateKlineData(oneMinData, period) {
       if (!oneMinData || oneMinData.length < period) {
         return []
       }
 
       const aggregated = []
-      
-      // 从后往前取完整的周期数据
+
       for (let i = oneMinData.length - 1; i >= period - 1; i -= period) {
         const startIndex = Math.max(0, i - period + 1)
         const endIndex = i + 1
         const window = oneMinData.slice(startIndex, endIndex)
-        
-        // 确保窗口大小正好是period
+
         if (window.length !== period) {
           continue
         }
 
-        // 聚合OHLCV数据
         const openPrice = parseFloat(window[0].startPrice || window[0].start_price || 0)
         const closePrice = parseFloat(window[window.length - 1].endPrice || window[window.length - 1].end_price || 0)
-        
+
         let maxPrice = 0
         let minPrice = Number.MAX_VALUE
         let totalVolume = 0
@@ -606,7 +581,7 @@ export default {
           const high = parseFloat(item.maxPrice || item.max_price || 0)
           const low = parseFloat(item.minPrice || item.min_price || 0)
           const volume = parseFloat(item.calcCount || item.volume || 0)
-          
+
           if (high > maxPrice) maxPrice = high
           if (low < minPrice) minPrice = low
           totalVolume += volume
@@ -673,7 +648,6 @@ export default {
         const hours = date.getHours().toString().padStart(2, '0')
         const minutes = date.getMinutes().toString().padStart(2, '0')
 
-        // 统一时间格式，确保对齐
         return `${month}/${day} ${hours}:${minutes}`
       })
 
@@ -744,46 +718,37 @@ export default {
       }
     },
 
-    /**
-     * 启动自动刷新
-     */
     startAutoRefresh() {
       if (this.refreshTimer) {
         clearInterval(this.refreshTimer)
       }
-      
+
       if (this.autoRefreshEnabled) {
-        console.log('启动自动刷新：每60秒刷新一次')
+        console.log('启动BTC自动刷新：每60秒刷新一次')
         this.refreshTimer = setInterval(() => {
-          console.log('执行自动刷新...')
+          console.log('执行BTC自动刷新...')
           this.loadAllKlineData()
-        }, 60000) // 60秒 = 60000毫秒
+        }, 60000)
       }
     },
 
-    /**
-     * 停止自动刷新
-     */
     stopAutoRefresh() {
       if (this.refreshTimer) {
         clearInterval(this.refreshTimer)
         this.refreshTimer = null
-        console.log('自动刷新已停止')
+        console.log('BTC自动刷新已停止')
       }
     },
 
-    /**
-     * 切换自动刷新状态
-     */
     toggleAutoRefresh() {
       this.autoRefreshEnabled = !this.autoRefreshEnabled
-      
+
       if (this.autoRefreshEnabled) {
         this.startAutoRefresh()
-        this.$message.success('已开启自动刷新（每60秒）')
+        this.$message.success('已开启BTC自动刷新（每60秒）')
       } else {
         this.stopAutoRefresh()
-        this.$message.info('已关闭自动刷新')
+        this.$message.info('已关闭BTC自动刷新')
       }
     },
 

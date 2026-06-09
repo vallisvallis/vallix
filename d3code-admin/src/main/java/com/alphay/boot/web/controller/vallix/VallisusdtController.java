@@ -3,6 +3,7 @@ package com.alphay.boot.web.controller.vallix;
 
 import com.alphay.boot.common.core.controller.BaseController;
 import com.alphay.boot.common.core.domain.AjaxResult;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -18,6 +19,7 @@ import java.util.Map;
  * @date 2025-05-26
  */
 @RestController
+@Slf4j
 @RequestMapping("/system/vallisusdt")
 public class VallisusdtController extends BaseController {
     @Autowired
@@ -34,6 +36,125 @@ public class VallisusdtController extends BaseController {
 
     @Autowired
     private KlineCacheService klineCacheService;
+
+    @Autowired
+    private BtcFeatureEngineeringService featureEngineeringService;
+
+    /**
+     * BTC特征工程回测分析
+     */
+    @GetMapping("/btc/feature/backtest")
+    public AjaxResult backtestWithFeatures(@RequestParam(defaultValue = "500") int dataPoints,
+                                           @RequestParam(defaultValue = "5") int predictWindow) {
+        try {
+            log.info("开始BTC特征工程回测，数据点数: {}, 预测窗口: {}分钟", dataPoints, predictWindow);
+            
+            // 限制最大数据点数，避免超时
+            if (dataPoints > 2000) {
+                dataPoints = 2000;
+                log.warn("数据点数超过限制，已调整为2000");
+            }
+            
+            // 获取足够的历史数据（需要额外的数据用于计算标签）
+            List<Vallisusdt> klineData = vallisUsdtEventTool.getBtc1minKline(dataPoints + predictWindow + 30);
+            
+            if (klineData == null || klineData.size() < 50) {
+                return AjaxResult.error("数据不足，至少需要50条数据");
+            }
+            
+            log.info("获取到{}条K线数据", klineData.size());
+            
+            // 执行回测
+            BtcFeatureEngineeringService.StatisticsResult result = 
+                featureEngineeringService.backtest(klineData, predictWindow);
+            
+            if (result == null) {
+                return AjaxResult.error("回测结果为空");
+            }
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("totalSamples", result.getTotalSamples());
+            response.put("validSamples", result.getValidSamples());
+            response.put("singleFactors", buildFactorResponse(result));
+            response.put("comboStrategies", buildComboResponse(result));
+            response.put("timestamp", new Date());
+            
+            return AjaxResult.success(response);
+            
+        } catch (Exception e) {
+            log.error("BTC特征工程回测异常", e);
+            return AjaxResult.error("回测失败: " + e.getMessage());
+        }
+    }
+    
+    private Map<String, Object> buildFactorResponse(BtcFeatureEngineeringService.StatisticsResult stats) {
+        Map<String, Object> factors = new HashMap<>();
+        
+        if (stats.getInertiaStats() != null) {
+            factors.put("inertia", convertFactorToMap(stats.getInertiaStats()));
+        }
+        if (stats.getPositionStats() != null) {
+            factors.put("position", convertFactorToMap(stats.getPositionStats()));
+        }
+        if (stats.getMaStats() != null) {
+            factors.put("ma", convertFactorToMap(stats.getMaStats()));
+        }
+        if (stats.getRsiStats() != null) {
+            factors.put("rsi", convertFactorToMap(stats.getRsiStats()));
+        }
+        if (stats.getVolStats() != null) {
+            factors.put("volume", convertFactorToMap(stats.getVolStats()));
+        }
+        
+        return factors;
+    }
+    
+    private Map<String, Object> buildComboResponse(BtcFeatureEngineeringService.StatisticsResult stats) {
+        Map<String, Object> combos = new HashMap<>();
+        
+        if (stats.getCombo1Stats() != null) {
+            combos.put("combo1_technical", convertFactorToMap(stats.getCombo1Stats()));
+        }
+        if (stats.getCombo2Stats() != null) {
+            combos.put("combo2_micro", convertFactorToMap(stats.getCombo2Stats()));
+        }
+        if (stats.getCombo3Stats() != null) {
+            combos.put("combo3_strong", convertFactorToMap(stats.getCombo3Stats()));
+        }
+        if (stats.getCombo4Stats() != null) {
+            combos.put("combo4_trend_strict", convertFactorToMap(stats.getCombo4Stats()));
+        }
+        if (stats.getCombo5Stats() != null) {
+            combos.put("combo5_reversion_strict", convertFactorToMap(stats.getCombo5Stats()));
+        }
+        if (stats.getCombo6Stats() != null) {
+            combos.put("combo6_momentum_strict", convertFactorToMap(stats.getCombo6Stats()));
+        }
+        if (stats.getCombo7Stats() != null) {
+            combos.put("combo7_multi_resonance", convertFactorToMap(stats.getCombo7Stats()));
+        } else {
+            log.warn("combo7Stats 为 null，跳过该策略");
+        }
+        
+        return combos;
+    }
+    
+    private Map<String, Object> convertFactorToMap(BtcFeatureEngineeringService.FactorStats stats) {
+        if (stats == null) {
+            return new HashMap<>();
+        }
+        
+        Map<String, Object> map = new HashMap<>();
+        map.put("factorName", stats.getFactorName());
+        map.put("totalPredictions", stats.getTotalPredictions());
+        map.put("correctPredictions", stats.getCorrectPredictions());
+        map.put("accuracy", String.format("%.2f", stats.getAccuracy()));
+        map.put("longPredictions", stats.getLongPredictions());
+        map.put("longAccuracy", String.format("%.2f", stats.getLongAccuracy()));
+        map.put("shortPredictions", stats.getShortPredictions());
+        map.put("shortAccuracy", String.format("%.2f", stats.getShortAccuracy()));
+        return map;
+    }
 
     // ===================== 回测接口 =====================
 
@@ -343,20 +464,42 @@ public class VallisusdtController extends BaseController {
     }
 
     /**
+     * 获取BTC原始K线数据
+     */
+    @GetMapping("/btc/data/raw")
+    public AjaxResult getBtcRawKlineData(@RequestParam(defaultValue = "100") int limit,
+                                         @RequestParam(defaultValue = "1m") String interval) {
+        try {
+            if (!"1m".equals(interval)) {
+                return AjaxResult.error("目前只支持1分钟K线");
+            }
+
+            List<Vallisusdt> data = vallisUsdtEventTool.getBtc1minKline(limit);
+            return AjaxResult.success(data);
+        } catch (Exception e) {
+            return AjaxResult.error("获取BTC原始数据失败: " + e.getMessage());
+        }
+    }
+
+    /**
      * 获取聚合K线数据
      */
     @GetMapping("/data/aggregated")
     public AjaxResult getAggregatedKlineData(@RequestParam(defaultValue = "1000") int oneMinLimit,
                                              @RequestParam String timeframe) {
         try {
+            long startTime = System.currentTimeMillis();
+            
             String cacheKey = String.format("kline_%d_%s", oneMinLimit, timeframe);
             
             Map<String, Object> cachedData = klineCacheService.get(cacheKey);
             if (cachedData != null) {
+                log.info("缓存命中: {}, 耗时: {}ms", cacheKey, System.currentTimeMillis() - startTime);
                 return AjaxResult.success(cachedData);
             }
             
             List<Vallisusdt> oneMinList = vallisUsdtEventTool.getEth1minKline(oneMinLimit);
+            log.info("获取ETH 1分钟数据: {}条, 耗时: {}ms", oneMinList.size(), System.currentTimeMillis() - startTime);
 
             Map<String, Object> result = new HashMap<>();
             result.put("one_minute_count", oneMinList.size());
@@ -364,25 +507,19 @@ public class VallisusdtController extends BaseController {
             switch (timeframe) {
                 case "10min":
                     List<Vallisusdt> rolling10Min = combineService.calculateRolling10Min(oneMinList);
-                    List<Vallisusdt> natural10Min = combineService.buildNatural10MinList(oneMinList);
                     result.put("rolling_10min", rolling10Min);
-                    result.put("natural_10min", natural10Min);
                     result.put("10min_count", rolling10Min.size());
                     break;
 
                 case "30min":
                     List<Vallisusdt> rolling30Min = combineService.calculateRolling30Min(oneMinList);
-                    List<Vallisusdt> natural30Min = combineService.buildNatural30MinList(oneMinList);
                     result.put("rolling_30min", rolling30Min);
-                    result.put("natural_30min", natural30Min);
                     result.put("30min_count", rolling30Min.size());
                     break;
 
                 case "60min":
                     List<Vallisusdt> rolling60Min = combineService.calculateRolling60Min(oneMinList);
-                    List<Vallisusdt> natural60Min = combineService.buildNatural60MinList(oneMinList);
                     result.put("rolling_60min", rolling60Min);
-                    result.put("natural_60min", natural60Min);
                     result.put("60min_count", rolling60Min.size());
                     break;
 
@@ -399,16 +536,560 @@ public class VallisusdtController extends BaseController {
                     break;
 
                 default:
-                    return AjaxResult.error("时间框架参数错误，必须是'10min'、'30min'、'60min'或'all'");
+                    return AjaxResult.error("不支持的时间框架");
             }
 
             klineCacheService.put(cacheKey, result);
-
+            
+            log.info("聚合数据返回: {}, 总耗时: {}ms", result.keySet(), System.currentTimeMillis() - startTime);
             return AjaxResult.success(result);
         } catch (Exception e) {
+            log.error("获取聚合数据异常", e);
             return AjaxResult.error("获取聚合数据失败: " + e.getMessage());
         }
     }
 
+    /**
+     * 获取BTC聚合K线数据
+     */
+    @GetMapping("/btc/data/aggregated")
+    public AjaxResult getBtcAggregatedKlineData(@RequestParam(defaultValue = "1000") int oneMinLimit,
+                                                @RequestParam String timeframe) {
+        try {
+            long startTime = System.currentTimeMillis();
+            
+            String cacheKey = String.format("btc_kline_%d_%s", oneMinLimit, timeframe);
+            
+            Map<String, Object> cachedData = klineCacheService.get(cacheKey);
+            if (cachedData != null) {
+                log.info("BTC缓存命中: {}, 耗时: {}ms", cacheKey, System.currentTimeMillis() - startTime);
+                return AjaxResult.success(cachedData);
+            }
+            
+            List<Vallisusdt> oneMinList = vallisUsdtEventTool.getBtc1minKline(oneMinLimit);
+            log.info("获取BTC 1分钟数据: {}条, 耗时: {}ms", oneMinList.size(), System.currentTimeMillis() - startTime);
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("one_minute_count", oneMinList.size());
+
+            switch (timeframe) {
+                case "10min":
+                    List<Vallisusdt> rolling10Min = combineService.calculateRolling10Min(oneMinList);
+                    result.put("rolling_10min", rolling10Min);
+                    result.put("10min_count", rolling10Min.size());
+                    break;
+
+                case "30min":
+                    List<Vallisusdt> rolling30Min = combineService.calculateRolling30Min(oneMinList);
+                    result.put("rolling_30min", rolling30Min);
+                    result.put("30min_count", rolling30Min.size());
+                    break;
+
+                case "60min":
+                    List<Vallisusdt> rolling60Min = combineService.calculateRolling60Min(oneMinList);
+                    result.put("rolling_60min", rolling60Min);
+                    result.put("60min_count", rolling60Min.size());
+                    break;
+
+                case "all":
+                    List<Vallisusdt> rolling10MinAll = combineService.calculateRolling10Min(oneMinList);
+                    List<Vallisusdt> rolling30MinAll = combineService.calculateRolling30Min(oneMinList);
+                    List<Vallisusdt> rolling60MinAll = combineService.calculateRolling60Min(oneMinList);
+                    result.put("rolling_10min", rolling10MinAll);
+                    result.put("rolling_30min", rolling30MinAll);
+                    result.put("rolling_60min", rolling60MinAll);
+                    result.put("10min_count", rolling10MinAll.size());
+                    result.put("30min_count", rolling30MinAll.size());
+                    result.put("60min_count", rolling60MinAll.size());
+                    break;
+
+                default:
+                    return AjaxResult.error("不支持的时间框架");
+            }
+
+            klineCacheService.put(cacheKey, result);
+            
+            log.info("BTC聚合数据返回: {}, 总耗时: {}ms", result.keySet(), System.currentTimeMillis() - startTime);
+            return AjaxResult.success(result);
+        } catch (Exception e) {
+            log.error("获取BTC聚合数据异常", e);
+            return AjaxResult.error("获取BTC聚合数据失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * BTC价格预测统计分析
+     * 分析当前价格与MA5/MA10/MA20的关系，以及5分钟后的价格走势
+     */
+    @GetMapping("/btc/statistics/prediction-analysis")
+    public AjaxResult getBtcPredictionAnalysis(@RequestParam(defaultValue = "1000") int dataPoints) {
+        try {
+            log.info("开始BTC价格预测统计分析，数据点数: {}", dataPoints);
+            
+            // 获取1分钟K线数据（需要足够的数据点来计算MA和5分钟后的价格）
+            // 需要额外25条数据：20条用于计算MA20，5条用于未来价格
+            int requiredData = dataPoints + 25;
+            List<Vallisusdt> oneMinList = vallisUsdtEventTool.getBtc1minKline(requiredData);
+            
+            log.info("获取到BTC数据: {}条，需要: {}条", oneMinList.size(), requiredData);
+            
+            if (oneMinList == null || oneMinList.size() < 30) {
+                return AjaxResult.error("数据不足，无法进行分析。至少需要30条数据");
+            }
+            
+            // 使用实际可用的数据点数量
+            int actualDataPoints = Math.min(dataPoints, oneMinList.size() - 25);
+            
+            if (actualDataPoints < 5) {
+                return AjaxResult.error("有效数据点不足，无法进行分析");
+            }
+            
+            log.info("使用实际数据点数: {}", actualDataPoints);
+            
+            // 统计数据结构
+            Map<String, Object> statistics = new HashMap<>();
+            
+            // MA5统计
+            Map<String, Object> ma5Stats = analyzeMAPrediction(oneMinList, actualDataPoints, 5);
+            statistics.put("MA5", ma5Stats);
+            
+            // MA10统计
+            Map<String, Object> ma10Stats = analyzeMAPrediction(oneMinList, actualDataPoints, 10);
+            statistics.put("MA10", ma10Stats);
+            
+            // MA20统计
+            Map<String, Object> ma20Stats = analyzeMAPrediction(oneMinList, actualDataPoints, 20);
+            statistics.put("MA20", ma20Stats);
+            
+            // 综合分析
+            Map<String, Object> combinedStats = analyzeCombinedMAPrediction(oneMinList, actualDataPoints);
+            statistics.put("combined", combinedStats);
+            
+            statistics.put("totalSamples", actualDataPoints);
+            statistics.put("actualDataUsed", oneMinList.size());
+            statistics.put("analysisTime", new Date());
+            
+            log.info("BTC价格预测统计分析完成，样本数: {}", actualDataPoints);
+            return AjaxResult.success(statistics);
+            
+        } catch (Exception e) {
+            log.error("BTC价格预测统计分析异常", e);
+            return AjaxResult.error("分析失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 分析单个MA指标的预测能力
+     */
+    private Map<String, Object> analyzeMAPrediction(List<Vallisusdt> data, int dataPoints, int maPeriod) {
+        Map<String, Object> stats = new HashMap<>();
+        
+        int totalSamples = 0;
+        int priceAboveMA = 0;  // 当前价格高于MA
+        int priceBelowMA = 0;  // 当前价格低于MA
+        
+        // 当价格高于MA时，5分钟后的情况
+        int aboveMAAndPriceUp = 0;   // 5分钟后价格上涨
+        int aboveMAAndPriceDown = 0; // 5分钟后价格下跌
+        int aboveMAAndPriceFlat = 0; // 5分钟后价格持平
+        
+        // 当价格低于MA时，5分钟后的情况
+        int belowMAAndPriceUp = 0;
+        int belowMAAndPriceDown = 0;
+        int belowMAAndPriceFlat = 0;
+        
+        // 按偏离幅度分组的统计
+        Map<String, int[]> deviationGroups = new HashMap<>();
+        // 每个数组: [count, upCount, downCount, flatCount]
+        deviationGroups.put("slight_above_0_1", new int[4]);      // 高于MA 0-1%
+        deviationGroups.put("moderate_above_1_3", new int[4]);    // 高于MA 1-3%
+        deviationGroups.put("significant_above_3_5", new int[4]); // 高于MA 3-5%
+        deviationGroups.put("large_above_5", new int[4]);         // 高于MA >5%
+        
+        deviationGroups.put("slight_below_0_1", new int[4]);      // 低于MA 0-1%
+        deviationGroups.put("moderate_below_1_3", new int[4]);    // 低于MA 1-3%
+        deviationGroups.put("significant_below_3_5", new int[4]); // 低于MA 3-5%
+        deviationGroups.put("large_below_5", new int[4]);         // 低于MA >5%
+        
+        // 计算MA值并统计
+        for (int i = maPeriod; i < dataPoints; i++) {
+            if (i + 5 >= data.size()) {
+                break; // 确保有足够的未来数据
+            }
+            
+            // 计算MA
+            double sum = 0;
+            for (int j = i - maPeriod; j < i; j++) {
+                sum += Double.parseDouble(data.get(j).getEndPrice());
+            }
+            double ma = sum / maPeriod;
+            
+            double currentPrice = Double.parseDouble(data.get(i).getEndPrice());
+            double futurePrice = Double.parseDouble(data.get(i + 5).getEndPrice());
+            
+            double priceChange = ((futurePrice - currentPrice) / currentPrice) * 100;
+            double deviationPercent = ((currentPrice - ma) / ma) * 100; // 偏离MA的百分比
+            
+            totalSamples++;
+            
+            if (currentPrice > ma) {
+                priceAboveMA++;
+                
+                if (priceChange > 0.01) { // 上涨超过0.01%
+                    aboveMAAndPriceUp++;
+                } else if (priceChange < -0.01) { // 下跌超过0.01%
+                    aboveMAAndPriceDown++;
+                } else {
+                    aboveMAAndPriceFlat++;
+                }
+                
+                // 按偏离幅度分组统计
+                String groupKey;
+                if (deviationPercent <= 1.0) {
+                    groupKey = "slight_above_0_1";
+                } else if (deviationPercent <= 3.0) {
+                    groupKey = "moderate_above_1_3";
+                } else if (deviationPercent <= 5.0) {
+                    groupKey = "significant_above_3_5";
+                } else {
+                    groupKey = "large_above_5";
+                }
+                
+                int[] groupStats = deviationGroups.get(groupKey);
+                groupStats[0]++; // count
+                if (priceChange > 0.01) {
+                    groupStats[1]++; // upCount
+                } else if (priceChange < -0.01) {
+                    groupStats[2]++; // downCount
+                } else {
+                    groupStats[3]++; // flatCount
+                }
+                
+            } else if (currentPrice < ma) {
+                priceBelowMA++;
+                
+                if (priceChange > 0.01) {
+                    belowMAAndPriceUp++;
+                } else if (priceChange < -0.01) {
+                    belowMAAndPriceDown++;
+                } else {
+                    belowMAAndPriceFlat++;
+                }
+                
+                // 按偏离幅度分组统计
+                String groupKey;
+                double absDeviation = Math.abs(deviationPercent);
+                if (absDeviation <= 1.0) {
+                    groupKey = "slight_below_0_1";
+                } else if (absDeviation <= 3.0) {
+                    groupKey = "moderate_below_1_3";
+                } else if (absDeviation <= 5.0) {
+                    groupKey = "significant_below_3_5";
+                } else {
+                    groupKey = "large_below_5";
+                }
+                
+                int[] groupStats = deviationGroups.get(groupKey);
+                groupStats[0]++; // count
+                if (priceChange > 0.01) {
+                    groupStats[1]++; // upCount
+                } else if (priceChange < -0.01) {
+                    groupStats[2]++; // downCount
+                } else {
+                    groupStats[3]++; // flatCount
+                }
+            }
+        }
+        
+        // 计算百分比
+        stats.put("totalSamples", totalSamples);
+        stats.put("priceAboveMACount", priceAboveMA);
+        stats.put("priceBelowMACount", priceBelowMA);
+        stats.put("priceAboveMAPercent", totalSamples > 0 ? (double) priceAboveMA / totalSamples * 100 : 0);
+        stats.put("priceBelowMAPercent", totalSamples > 0 ? (double) priceBelowMA / totalSamples * 100 : 0);
+        
+        // 价格高于MA时的预测准确率
+        if (priceAboveMA > 0) {
+            Map<String, Object> aboveStats = new HashMap<>();
+            aboveStats.put("upCount", aboveMAAndPriceUp);
+            aboveStats.put("downCount", aboveMAAndPriceDown);
+            aboveStats.put("flatCount", aboveMAAndPriceFlat);
+            aboveStats.put("upPercent", (double) aboveMAAndPriceUp / priceAboveMA * 100);
+            aboveStats.put("downPercent", (double) aboveMAAndPriceDown / priceAboveMA * 100);
+            aboveStats.put("flatPercent", (double) aboveMAAndPriceFlat / priceAboveMA * 100);
+            stats.put("whenPriceAboveMA", aboveStats);
+        }
+        
+        // 价格低于MA时的预测准确率
+        if (priceBelowMA > 0) {
+            Map<String, Object> belowStats = new HashMap<>();
+            belowStats.put("upCount", belowMAAndPriceUp);
+            belowStats.put("downCount", belowMAAndPriceDown);
+            belowStats.put("flatCount", belowMAAndPriceFlat);
+            belowStats.put("upPercent", (double) belowMAAndPriceUp / priceBelowMA * 100);
+            belowStats.put("downPercent", (double) belowMAAndPriceDown / priceBelowMA * 100);
+            belowStats.put("flatPercent", (double) belowMAAndPriceFlat / priceBelowMA * 100);
+            stats.put("whenPriceBelowMA", belowStats);
+        }
+        
+        // 添加偏离幅度分析
+        Map<String, Object> deviationAnalysis = new HashMap<>();
+        
+        for (Map.Entry<String, int[]> entry : deviationGroups.entrySet()) {
+            String key = entry.getKey();
+            int[] values = entry.getValue();
+            
+            if (values[0] > 0) { // 只有当有样本时才添加
+                Map<String, Object> groupData = new HashMap<>();
+                groupData.put("count", values[0]);
+                groupData.put("upCount", values[1]);
+                groupData.put("downCount", values[2]);
+                groupData.put("flatCount", values[3]);
+                groupData.put("upPercent", (double) values[1] / values[0] * 100);
+                groupData.put("downPercent", (double) values[2] / values[0] * 100);
+                groupData.put("flatPercent", (double) values[3] / values[0] * 100);
+                
+                deviationAnalysis.put(key, groupData);
+            }
+        }
+        
+        stats.put("deviationAnalysis", deviationAnalysis);
+        
+        return stats;
+    }
+    
+    /**
+     * 综合分析多个MA指标
+     */
+    private Map<String, Object> analyzeCombinedMAPrediction(List<Vallisusdt> data, int dataPoints) {
+        Map<String, Object> stats = new HashMap<>();
+        
+        int totalSamples = 0;
+        
+        // 三种MA都高于价格的场景
+        int allAboveScenario = 0;
+        int allAboveAndPriceUp = 0;
+        int allAboveAndPriceDown = 0;
+        
+        // 三种MA都低于价格的场景
+        int allBelowScenario = 0;
+        int allBelowAndPriceUp = 0;
+        int allBelowAndPriceDown = 0;
+        
+        // 价格在MA5和MA10之间
+        int between5and10Scenario = 0;
+        int between5and10AndPriceUp = 0;
+        int between5and10AndPriceDown = 0;
+        
+        // 价格在MA10和MA20之间
+        int between10and20Scenario = 0;
+        int between10and20AndPriceUp = 0;
+        int between10and20AndPriceDown = 0;
+        
+        for (int i = 20; i < dataPoints; i++) {
+            if (i + 5 >= data.size()) {
+                break; // 确保有足够的未来数据
+            }
+            
+            // 计算三个MA
+            double ma5 = calculateMA(data, i, 5);
+            double ma10 = calculateMA(data, i, 10);
+            double ma20 = calculateMA(data, i, 20);
+            
+            double currentPrice = Double.parseDouble(data.get(i).getEndPrice());
+            double futurePrice = Double.parseDouble(data.get(i + 5).getEndPrice());
+            double priceChange = ((futurePrice - currentPrice) / currentPrice) * 100;
+            
+            totalSamples++;
+            
+            // 判断场景
+            if (currentPrice > ma5 && currentPrice > ma10 && currentPrice > ma20) {
+                // 价格高于所有MA
+                allAboveScenario++;
+                if (priceChange > 0.01) {
+                    allAboveAndPriceUp++;
+                } else if (priceChange < -0.01) {
+                    allAboveAndPriceDown++;
+                }
+            } else if (currentPrice < ma5 && currentPrice < ma10 && currentPrice < ma20) {
+                // 价格低于所有MA
+                allBelowScenario++;
+                if (priceChange > 0.01) {
+                    allBelowAndPriceUp++;
+                } else if (priceChange < -0.01) {
+                    allBelowAndPriceDown++;
+                }
+            } else if (currentPrice > ma5 && currentPrice < ma10) {
+                // 价格在MA5和MA10之间
+                between5and10Scenario++;
+                if (priceChange > 0.01) {
+                    between5and10AndPriceUp++;
+                } else if (priceChange < -0.01) {
+                    between5and10AndPriceDown++;
+                }
+            } else if (currentPrice > ma10 && currentPrice < ma20) {
+                // 价格在MA10和MA20之间
+                between10and20Scenario++;
+                if (priceChange > 0.01) {
+                    between10and20AndPriceUp++;
+                } else if (priceChange < -0.01) {
+                    between10and20AndPriceDown++;
+                }
+            }
+        }
+        
+        // 统计结果
+        Map<String, Object> scenario1 = new HashMap<>();
+        scenario1.put("count", allAboveScenario);
+        scenario1.put("upPercent", allAboveScenario > 0 ? (double) allAboveAndPriceUp / allAboveScenario * 100 : 0);
+        scenario1.put("downPercent", allAboveScenario > 0 ? (double) allAboveAndPriceDown / allAboveScenario * 100 : 0);
+        stats.put("priceAboveAllMA", scenario1);
+        
+        Map<String, Object> scenario2 = new HashMap<>();
+        scenario2.put("count", allBelowScenario);
+        scenario2.put("upPercent", allBelowScenario > 0 ? (double) allBelowAndPriceUp / allBelowScenario * 100 : 0);
+        scenario2.put("downPercent", allBelowScenario > 0 ? (double) allBelowAndPriceDown / allBelowScenario * 100 : 0);
+        stats.put("priceBelowAllMA", scenario2);
+        
+        Map<String, Object> scenario3 = new HashMap<>();
+        scenario3.put("count", between5and10Scenario);
+        scenario3.put("upPercent", between5and10Scenario > 0 ? (double) between5and10AndPriceUp / between5and10Scenario * 100 : 0);
+        scenario3.put("downPercent", between5and10Scenario > 0 ? (double) between5and10AndPriceDown / between5and10Scenario * 100 : 0);
+        stats.put("priceBetweenMA5andMA10", scenario3);
+        
+        Map<String, Object> scenario4 = new HashMap<>();
+        scenario4.put("count", between10and20Scenario);
+        scenario4.put("upPercent", between10and20Scenario > 0 ? (double) between10and20AndPriceUp / between10and20Scenario * 100 : 0);
+        scenario4.put("downPercent", between10and20Scenario > 0 ? (double) between10and20AndPriceDown / between10and20Scenario * 100 : 0);
+        stats.put("priceBetweenMA10andMA20", scenario4);
+        
+        stats.put("totalSamples", totalSamples);
+        
+        return stats;
+    }
+    
+    /**
+     * 计算指定位置的MA值
+     */
+    private double calculateMA(List<Vallisusdt> data, int currentIndex, int period) {
+        double sum = 0;
+        for (int j = currentIndex - period; j < currentIndex; j++) {
+            sum += Double.parseDouble(data.get(j).getEndPrice());
+        }
+        return sum / period;
+    }
+    
+    /**
+     * BTC实时预测（基于最新数据）
+     */
+    @GetMapping("/btc/feature/realtime-predict")
+    public AjaxResult realtimePredict() {
+        try {
+            log.info("开始BTC实时预测...");
+            
+            // 获取最新的K线数据
+            List<Vallisusdt> klineData = vallisUsdtEventTool.getBtc1minKline(50);
+            
+            if (klineData == null || klineData.size() < 30) {
+                return AjaxResult.error("数据不足");
+            }
+            
+            // 提取最新特征
+            List<BtcFeatureEngineeringService.FeatureData> features = 
+                featureEngineeringService.extractFeatures(klineData, 5);
+            
+            if (features == null || features.isEmpty()) {
+                return AjaxResult.error("无法提取特征");
+            }
+            
+            // 获取最新时刻的特征
+            BtcFeatureEngineeringService.FeatureData latestFeature = features.get(features.size() - 1);
+            
+            // 生成所有预测
+            Map<String, Object> predictions = new HashMap<>();
+            predictions.put("timestamp", latestFeature.getTimestamp());
+            predictions.put("currentPrice", Double.parseDouble(klineData.get(klineData.size() - 1).getEndPrice()));
+            
+            // 单因子预测
+            Map<String, Object> singlePredictions = new HashMap<>();
+            singlePredictions.put("inertia", featureEngineeringService.predictByInertia(latestFeature));
+            singlePredictions.put("position", featureEngineeringService.predictByPosition(latestFeature));
+            singlePredictions.put("ma", featureEngineeringService.predictByMA(latestFeature));
+            singlePredictions.put("rsi", featureEngineeringService.predictByRSI(latestFeature));
+            singlePredictions.put("volume", featureEngineeringService.predictByVolume(latestFeature));
+            predictions.put("singleFactors", singlePredictions);
+            
+            // 组合策略预测
+            Map<String, Object> comboPredictions = new HashMap<>();
+            comboPredictions.put("combo1_technical", featureEngineeringService.predictCombo1(latestFeature));
+            comboPredictions.put("combo2_micro", featureEngineeringService.predictCombo2(latestFeature));
+            comboPredictions.put("combo3_strong", featureEngineeringService.predictCombo3(latestFeature));
+            comboPredictions.put("combo4_trend", featureEngineeringService.predictTrendFollowing(latestFeature));
+            comboPredictions.put("combo5_reversion", featureEngineeringService.predictMeanReversion(latestFeature));
+            comboPredictions.put("combo6_momentum", featureEngineeringService.predictMomentumBreakout(latestFeature));
+            comboPredictions.put("combo7_resonance", featureEngineeringService.predictMultiResonance(latestFeature));
+            predictions.put("combos", comboPredictions);
+
+            // 综合建议
+            String recommendation = generateRecommendation(comboPredictions);
+            predictions.put("recommendation", recommendation);
+            
+            // 当前特征值
+            Map<String, Object> currentFeatures = new HashMap<>();
+            currentFeatures.put("rsi", String.format("%.2f", latestFeature.getRsi14()));
+            currentFeatures.put("ema9", String.format("%.2f", latestFeature.getEma9()));
+            currentFeatures.put("ema21", String.format("%.2f", latestFeature.getEma21()));
+            currentFeatures.put("volRatio", latestFeature.getVolRatio5m() != null ? 
+                String.format("%.2f", latestFeature.getVolRatio5m()) : "N/A");
+            currentFeatures.put("position5m", String.format("%.2f", latestFeature.getPosition5m()));
+            predictions.put("currentFeatures", currentFeatures);
+            
+            return AjaxResult.success(predictions);
+            
+        } catch (Exception e) {
+            log.error("BTC实时预测异常", e);
+            return AjaxResult.error("预测失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 生成综合建议
+     */
+    private String generateRecommendation(Map<String, Object> comboPredictions) {
+        int bullishCount = 0;
+        int bearishCount = 0;
+        int validCount = 0;
+        
+        for (Object pred : comboPredictions.values()) {
+            if (pred == null) continue;
+            
+            validCount++;
+            Integer prediction = (Integer) pred;
+            if (prediction == 1) {
+                bullishCount++;
+            } else if (prediction == 0) {
+                bearishCount++;
+            }
+        }
+        
+        if (validCount == 0) {
+            return "观望 - 无明确信号";
+        }
+        
+        double bullishRatio = (double) bullishCount / validCount;
+        double bearishRatio = (double) bearishCount / validCount;
+        
+        if (bullishRatio >= 0.7) {
+            return "强烈看多 - " + bullishCount + "/" + validCount + "个策略看涨";
+        } else if (bullishRatio >= 0.5) {
+            return "温和看多 - " + bullishCount + "/" + validCount + "个策略看涨";
+        } else if (bearishRatio >= 0.7) {
+            return "强烈看空 - " + bearishCount + "/" + validCount + "个策略看跌";
+        } else if (bearishRatio >= 0.5) {
+            return "温和看空 - " + bearishCount + "/" + validCount + "个策略看跌";
+        } else {
+            return "震荡观望 - 多空分歧";
+        }
+    }
 
 }
