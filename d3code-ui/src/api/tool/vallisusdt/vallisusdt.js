@@ -287,6 +287,143 @@ export function calculateRecommendedPosition(riskLevel, signalStrength = '普通
   return Math.min(position, 0.03) // 最大3%
 }
 
+// ===================== WebSocket 相关 =====================
+
+let wsConnection = null
+let wsReconnectTimer = null
+let wsMessageHandlers = []
+
+/**
+ * 创建WebSocket连接
+ * @param {function} onMessage - 消息处理回调
+ * @param {function} onError - 错误处理回调
+ * @param {function} onClose - 关闭处理回调
+ */
+export function connectWebSocket(onMessage, onError, onClose) {
+  // 先关闭已存在的连接
+  disconnectWebSocket()
+  
+  // 获取当前协议，HTTP对应ws，HTTPS对应wss
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const host = window.location.host
+  const wsUrl = `${protocol}//${host}/system/vallisusdt/ws/kline`
+  
+  wsConnection = new WebSocket(wsUrl)
+  
+  wsConnection.onopen = () => {
+    console.log('WebSocket连接已建立')
+    // 发送订阅消息
+    wsConnection.send(JSON.stringify({ action: 'subscribe', interval: '1m' }))
+  }
+  
+  wsConnection.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      if (onMessage) {
+        onMessage(data)
+      }
+      // 调用所有注册的消息处理器
+      wsMessageHandlers.forEach(handler => handler(data))
+    } catch (error) {
+      console.error('WebSocket消息解析失败:', error)
+    }
+  }
+  
+  wsConnection.onerror = (error) => {
+    console.error('WebSocket错误:', error)
+    if (onError) {
+      onError(error)
+    }
+  }
+  
+  wsConnection.onclose = (event) => {
+    console.log('WebSocket连接已关闭:', event.code, event.reason)
+    if (onClose) {
+      onClose(event)
+    }
+    // 自动重连
+    scheduleReconnect()
+  }
+}
+
+/**
+ * 订阅K线数据
+ * @param {string} interval - 时间间隔：'1m', '5m', '10m', '15m', '1h', '4h', '1d'
+ */
+export function subscribeKline(interval = '1m') {
+  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    wsConnection.send(JSON.stringify({ action: 'subscribe', interval }))
+  }
+}
+
+/**
+ * 取消订阅
+ */
+export function unsubscribeKline() {
+  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    wsConnection.send(JSON.stringify({ action: 'unsubscribe' }))
+  }
+}
+
+/**
+ * 关闭WebSocket连接
+ */
+export function disconnectWebSocket() {
+  // 取消重连定时器
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer)
+    wsReconnectTimer = null
+  }
+  
+  if (wsConnection) {
+    wsConnection.close()
+    wsConnection = null
+  }
+}
+
+/**
+ * 注册消息处理器
+ * @param {function} handler - 消息处理函数
+ */
+export function registerWsHandler(handler) {
+  if (!wsMessageHandlers.includes(handler)) {
+    wsMessageHandlers.push(handler)
+  }
+}
+
+/**
+ * 取消注册消息处理器
+ * @param {function} handler - 消息处理函数
+ */
+export function unregisterWsHandler(handler) {
+  wsMessageHandlers = wsMessageHandlers.filter(h => h !== handler)
+}
+
+/**
+ * 调度重连
+ */
+function scheduleReconnect() {
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer)
+  }
+  // 5秒后重连
+  wsReconnectTimer = setTimeout(() => {
+    console.log('尝试重新连接WebSocket...')
+    // 触发重连时保持当前的消息处理器
+    if (wsMessageHandlers.length > 0) {
+      connectWebSocket()
+    }
+  }, 5000)
+}
+
+/**
+ * 检查WebSocket连接状态
+ * @returns {boolean} - 是否已连接
+ */
+export function isWsConnected() {
+  return wsConnection && wsConnection.readyState === WebSocket.OPEN
+}
+
 // ===================== 常量定义 =====================
 
 export const STRATEGY_PARAMS = {

@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * BTC/USDT K线数据 Controller
@@ -21,7 +22,7 @@ import java.util.Map;
  */
 @RestController
 @Slf4j
-@RequestMapping("/api/vallisusdt")
+@RequestMapping("/system/vallisusdt")
 public class VallisusdtController extends BaseController {
 
     @Autowired
@@ -67,7 +68,7 @@ public class VallisusdtController extends BaseController {
 
     /**
      * 获取币安 BTC/USDT 1分钟K线数据
-     * GET /api/vallisusdt/btc/kline?limit=50
+     * GET /system/vallisusdt/btc/kline?limit=50
      */
     @GetMapping("/btc/kline")
     public AjaxResult getBtcKline(@RequestParam(defaultValue = "50") int limit) {
@@ -80,9 +81,88 @@ public class VallisusdtController extends BaseController {
         }
     }
 
+    // 修改 getRawKlineData 方法
+    // 修改 VallisusdtController.java 中的 getRawKlineData 方法
+    @GetMapping("/data/raw")
+    public AjaxResult getRawKlineData(
+            @RequestParam(defaultValue = "100") int limit,
+            @RequestParam(defaultValue = "1m") String interval) {
+        try {
+            log.info("获取ETH原始K线数据, limit={}, interval={}", limit, interval);
+
+            List<Vallisusdt> dataList;
+
+            // 特殊处理10分钟间隔（币安API不支持）
+            if ("10m".equals(interval)) {
+                dataList = vallisUsdtEventTool.getEth10minKline(Math.min(limit, 30));
+            } else {
+                dataList = vallisUsdtEventTool.getEthKline(Math.min(limit, 1000), interval);
+            }
+
+            // 转换为前端期望的字段格式
+            List<KlineDataDTO> dtoList = dataList.stream()
+                    .map(this::convertToKlineDataDTO)
+                    .collect(java.util.stream.Collectors.toList());
+
+            return AjaxResult.success("获取成功", dtoList);
+        } catch (Exception e) {
+            log.error("获取ETH原始K线数据异常", e);
+            return AjaxResult.error("获取失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 将Vallisusdt实体转换为前端期望的KlineDataDTO格式
+     */
+    private KlineDataDTO convertToKlineDataDTO(Vallisusdt data) {
+        return KlineDataDTO.builder()
+                .startPrice(parseDouble(data.getOpen()))
+                .endPrice(parseDouble(data.getClose()))
+                .maxPrice(parseDouble(data.getHigh()))
+                .minPrice(parseDouble(data.getLow()))
+                .calcCount(parseDouble(data.getVolume()))
+                .startTime(data.getOpenTime())
+                .endTime(data.getCloseTime())
+                .build();
+    }
+
+    /**
+     * 安全解析Double值
+     */
+    private Double parseDouble(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return 0.0;
+        }
+        try {
+            return Double.parseDouble(value);
+        } catch (NumberFormatException e) {
+            return 0.0;
+        }
+    }
+
+    /**
+     * 获取BTC原始K线数据
+     * GET /system/vallisusdt/btc/data/raw?limit=100&interval=1m
+     * @param limit 数据条数，默认100，最大1000
+     * @param interval 时间间隔，默认1m（支持1m, 5m, 15m, 30m, 1h等）
+     */
+    @GetMapping("/btc/data/raw")
+    public AjaxResult getBtcRawKlineData(
+            @RequestParam(defaultValue = "100") int limit,
+            @RequestParam(defaultValue = "1m") String interval) {
+        try {
+            log.info("获取BTC原始K线数据, limit={}, interval={}", limit, interval);
+            List<Vallisusdt> dataList = vallisUsdtEventTool.getBtc1minKline(Math.min(limit, 1000));
+            return AjaxResult.success("获取成功", dataList);
+        } catch (Exception e) {
+            log.error("获取BTC原始K线数据异常", e);
+            return AjaxResult.error("获取失败: " + e.getMessage());
+        }
+    }
+
     /**
      * 拉取并保存BTC历史数据到数据库
-     * POST /api/vallisusdt/btc/save
+     * POST /system/vallisusdt/btc/save
      * @param limit 获取并保存的数量
      */
     @PostMapping("/btc/save")
@@ -330,5 +410,71 @@ public class VallisusdtController extends BaseController {
         resultMap.put("successCount", successCount);
         resultMap.put("failCount", failCount);
         return resultMap;
+    }
+
+    /**
+     * 获取WebSocket连接状态
+     * GET /system/vallisusdt/ws/status
+     */
+    @GetMapping("/ws/status")
+    public AjaxResult getWsStatus() {
+        try {
+            Map<String, Object> status = new HashMap<>();
+            
+            // ETH K线WebSocket状态
+            int ethOnlineCount = com.alphay.boot.web.websocket.EthKlineWebSocketHandler.getOnlineCount();
+            status.put("ethKlineWsOnline", ethOnlineCount);
+            status.put("ethKlineWsEndpoint", "/system/vallisusdt/ws/kline");
+            
+            // BTC WebSocket状态
+            int btcOnlineCount = com.alphay.boot.web.websocket.BtcRealTimeHandler.getOnlineCount();
+            status.put("btcWsOnline", btcOnlineCount);
+            status.put("btcWsEndpoint", "/ws/btc/realtime");
+            
+            return AjaxResult.success("WebSocket状态查询成功", status);
+        } catch (Exception e) {
+            log.error("获取WebSocket状态异常", e);
+            return AjaxResult.error("获取失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 测试WebSocket连接
+     * GET /system/vallisusdt/ws/test
+     */
+    @GetMapping("/ws/test")
+    public AjaxResult testWsConnection() {
+        try {
+            // 测试币安API是否可访问
+            Vallisusdt testData = vallisUsdtEventTool.getLatestBtcData();
+            boolean apiAvailable = testData != null;
+            
+            Map<String, Object> result = new HashMap<>();
+            result.put("binanceApiAvailable", apiAvailable);
+            result.put("testData", testData);
+            result.put("ethWsEndpoint", "ws://" + getServerHost() + "/system/vallisusdt/ws/kline");
+            result.put("btcWsEndpoint", "ws://" + getServerHost() + "/ws/btc/realtime");
+            
+            if (apiAvailable) {
+                return AjaxResult.success("WebSocket服务正常", result);
+            } else {
+                return AjaxResult.warn("币安API不可访问，请检查网络", result);
+            }
+        } catch (Exception e) {
+            log.error("测试WebSocket异常", e);
+            return AjaxResult.error("测试失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 获取服务器主机名
+     */
+    private String getServerHost() {
+        try {
+            return java.net.InetAddress.getLocalHost().getHostAddress() + ":8080";
+        } catch (java.net.UnknownHostException e) {
+            log.warn("无法获取本地主机地址: {}", e.getMessage());
+            return "localhost:8080";
+        }
     }
 }

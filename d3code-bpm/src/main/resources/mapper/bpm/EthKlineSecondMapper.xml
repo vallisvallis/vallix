@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.alphay.boot.bpm.mapper.EthKlineSecondMapper">
+
+    <resultMap type="com.alphay.boot.bpm.api.domain.EthKlineSecond" id="EthKlineSecondResult">
+        <id property="id" column="id" />
+        <result property="timestamp" column="timestamp" />
+        <result property="open" column="open" />
+        <result property="close" column="close" />
+        <result property="high" column="high" />
+        <result property="low" column="low" />
+        <result property="volume" column="volume" />
+        <result property="createTime" column="create_time" />
+        <result property="deleted" column="deleted" />
+    </resultMap>
+
+    <resultMap type="com.alphay.boot.bpm.api.domain.EthKlineSecondCompareVO" id="EthKlineSecondCompareResult">
+        <result property="timestamp" column="timestamp" />
+        <result property="open" column="open" />
+        <result property="close" column="close" />
+        <result property="high" column="high" />
+        <result property="low" column="low" />
+        <result property="volume" column="volume" />
+        <result property="close10MinAgo" column="close_10min_ago" />
+        <result property="priceChange" column="price_change" />
+        <result property="priceChangePercent" column="price_change_percent" />
+    </resultMap>
+
+    <sql id="selectEthKlineSecondVo">
+        select id, timestamp, open, close, high, low, volume, create_time, deleted from eth_kline_second
+    </sql>
+
+    <select id="selectByTimeRange" resultMap="EthKlineSecondResult">
+        <include refid="selectEthKlineSecondVo"/>
+        where timestamp &gt;= #{startTime} and timestamp &lt;= #{endTime}
+        order by timestamp asc
+    </select>
+
+    <select id="selectRecent" parameterType="java.lang.Integer" resultMap="EthKlineSecondResult">
+        <include refid="selectEthKlineSecondVo"/>
+        where deleted = 0
+        order by timestamp desc
+        limit #{limit}
+    </select>
+
+    <select id="selectRecentWithCompare" parameterType="java.lang.Integer" resultMap="EthKlineSecondCompareResult">
+        SELECT 
+            e.timestamp,
+            e.open,
+            e.close,
+            e.high,
+            e.low,
+            e.volume,
+            e10.close AS close_10min_ago,
+            ROUND(CAST(e.close AS DECIMAL(20,8)) - COALESCE(CAST(e10.close AS DECIMAL(20,8)), CAST(e.close AS DECIMAL(20,8))), 2) AS price_change,
+            ROUND(IF(COALESCE(CAST(e10.close AS DECIMAL(20,8)), 0) = 0, 0, (CAST(e.close AS DECIMAL(20,8)) - CAST(e10.close AS DECIMAL(20,8))) / CAST(e10.close AS DECIMAL(20,8)) * 100), 2) AS price_change_percent
+        FROM (
+            SELECT timestamp, open, close, high, low, volume 
+            FROM eth_kline_second 
+            WHERE deleted = 0 
+            ORDER BY timestamp DESC 
+            LIMIT #{limit}
+        ) e
+        LEFT JOIN eth_kline_second e10 ON e10.timestamp = e.timestamp - 600000000
+        ORDER BY e.timestamp DESC
+    </select>
+
+    <select id="selectByTimeRangeWithCompare" resultMap="EthKlineSecondCompareResult">
+        SELECT 
+            e.timestamp,
+            e.open,
+            e.close,
+            e.high,
+            e.low,
+            e.volume,
+            e10.close AS close_10min_ago,
+            ROUND(CAST(e.close AS DECIMAL(20,8)) - COALESCE(CAST(e10.close AS DECIMAL(20,8)), CAST(e.close AS DECIMAL(20,8))), 2) AS price_change,
+            ROUND(IF(COALESCE(CAST(e10.close AS DECIMAL(20,8)), 0) = 0, 0, (CAST(e.close AS DECIMAL(20,8)) - CAST(e10.close AS DECIMAL(20,8))) / CAST(e10.close AS DECIMAL(20,8)) * 100), 2) AS price_change_percent
+        FROM eth_kline_second e
+        LEFT JOIN eth_kline_second e10 ON e10.timestamp = e.timestamp - 600000000
+        WHERE e.deleted = 0
+          AND e.timestamp &gt;= #{startTime} AND e.timestamp &lt;= #{endTime}
+        ORDER BY e.timestamp ASC
+    </select>
+
+    <delete id="deleteBefore" parameterType="java.lang.Long">
+        delete from eth_kline_second where timestamp &lt; #{beforeTime}
+    </delete>
+
+</mapper>

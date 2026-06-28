@@ -53,6 +53,15 @@ export const constantRoutes = [
     hidden: true
   },
   {
+    path: '/ethDetail',
+    component: () => import('@/views/vallisUsdt/ethDetail'),
+    hidden: true
+  },{
+    path: '/ethHistory',
+    component: () => import('@/views/vallisUsdt/ethHistory'),
+    hidden: true
+  },
+  {
     path: '/btcv',
     component: () => import('@/views/btcusdt/btcv'),
     hidden: true

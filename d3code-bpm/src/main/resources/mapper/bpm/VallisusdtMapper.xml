@@ -3,7 +3,8 @@
         PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.alphay.boot.bpm.mapper.VallisusdtMapper">
-    <resultMap type="Vallisusdt" id="VallisusdtResult">
+
+    <resultMap type="com.alphay.boot.bpm.api.domain.Vallisusdt" id="VallisusdtResult">
         <result property="id" column="id"/>
         <result property="openTime" column="open_time"/>
         <result property="open" column="open"/>
@@ -31,41 +32,11 @@
         from vallisusdt
     </sql>
 
-    <select id="selectVallisusdtList" parameterType="Vallisusdt" resultMap="VallisusdtResult">
+    <select id="selectVallisusdtList" parameterType="com.alphay.boot.bpm.api.domain.Vallisusdt" resultMap="VallisusdtResult">
         <include refid="selectVallisusdtVo"/>
         <where>
-            <if test="openTime != null ">
+            <if test="openTime != null">
                 and open_time = #{openTime}
-            </if>
-            <if test="closeTime != null ">
-                and close_time = #{closeTime}
-            </if>
-            <if test="open != null  and open != ''">
-                and open = #{open}
-            </if>
-            <if test="high != null  and high != ''">
-                and high = #{high}
-            </if>
-            <if test="low != null  and low != ''">
-                and low = #{low}
-            </if>
-            <if test="close != null  and close != ''">
-                and close = #{close}
-            </if>
-            <if test="volume != null  and volume != ''">
-                and volume = #{volume}
-            </if>
-            <if test="quoteVolume != null  and quoteVolume != ''">
-                and quote_volume = #{quoteVolume}
-            </if>
-            <if test="trades != null">
-                and trades = #{trades}
-            </if>
-            <if test="takerBuyBase != null  and takerBuyBase != ''">
-                and taker_buy_base = #{takerBuyBase}
-            </if>
-            <if test="takerBuyQuote != null  and takerBuyQuote != ''">
-                and taker_buy_quote = #{takerBuyQuote}
             </if>
             <if test="deleted != null">
                 and deleted = #{deleted}
@@ -75,4 +46,62 @@
             </if>
         </where>
     </select>
+
+    <resultMap type="com.alphay.boot.bpm.api.domain.PriceChangeStat" id="PriceChangeStatResult">
+        <result property="openTime" column="open_time"/>
+        <result property="currentClose" column="current_close"/>
+        <result property="futureClose" column="future_close"/>
+        <result property="changePercent" column="change_percent"/>
+        <result property="direction" column="direction"/>
+    </resultMap>
+
+    <select id="selectPriceChangeStats" resultMap="PriceChangeStatResult">
+        SELECT 
+            t1.open_time,
+            CAST(t1.close AS DECIMAL(20,2)) AS current_close,
+            CAST(t2.close AS DECIMAL(20,2)) AS future_close,
+            CASE 
+                WHEN CAST(t2.close AS DECIMAL(20,2)) &gt; CAST(t1.close AS DECIMAL(20,2)) THEN 'UP'
+                WHEN CAST(t2.close AS DECIMAL(20,2)) &lt; CAST(t1.close AS DECIMAL(20,2)) THEN 'DOWN'
+                ELSE 'FLAT' END AS direction,
+            ROUND((CAST(t2.close AS DECIMAL(20,2)) - CAST(t1.close AS DECIMAL(20,2))) / NULLIF(CAST(t1.close AS DECIMAL(20,2)),0) * 100, 4) AS change_percent
+        FROM vallisusdt t1
+        LEFT JOIN vallisusdt t2 ON t2.open_time = t1.open_time + 600000
+        WHERE t1.deleted = 0
+        ORDER BY t1.open_time
+    </select>
+
+    <!-- ==================== 事件合约回测 ==================== -->
+
+    <resultMap type="com.alphay.boot.bpm.api.domain.KlineFuturePrice" id="KlineFuturePriceResult">
+        <result property="openTime"      column="open_time"/>
+        <result property="openPrice"     column="open_price"/>
+        <result property="highPrice"     column="high_price"/>
+        <result property="lowPrice"      column="low_price"/>
+        <result property="closePrice"    column="close_price"/>
+        <result property="takerBuyRatio" column="taker_buy_ratio"/>
+        <result property="volume"        column="volume"/>
+    </resultMap>
+
+    <!--
+        获取所有K线的 OHLC 价格 + takerBuyRatio + volume（已按时间升序）。
+        futureClose 由 Java 层用数组下标索引 O(1) 直接跳转。
+    -->
+    <select id="selectKlineWithFuturePrice" resultMap="KlineFuturePriceResult">
+        SELECT
+            open_time,
+            CAST(open  AS DECIMAL(20,8)) AS open_price,
+            CAST(high  AS DECIMAL(20,8)) AS high_price,
+            CAST(low   AS DECIMAL(20,8)) AS low_price,
+            CAST(close AS DECIMAL(20,8)) AS close_price,
+            CASE WHEN CAST(volume AS DECIMAL(20,8)) &gt; 0
+                 THEN CAST(taker_buy_base AS DECIMAL(20,8)) / CAST(volume AS DECIMAL(20,8))
+                 ELSE 0
+            END AS taker_buy_ratio,
+            CAST(volume AS DECIMAL(20,8)) AS volume
+        FROM vallisusdt
+        WHERE deleted = 0
+        ORDER BY open_time ASC
+    </select>
+
 </mapper>

@@ -52,6 +52,98 @@ public class VallisUsdtEventTool {
             return new ArrayList<>();
         }
     }
+// 在 VallisUsdtEventTool.java 中添加10分钟K线聚合方法
+    /**
+     * 获取ETH 10分钟K线数据（通过聚合1分钟数据实现）
+     */
+    public List<Vallisusdt> getEth10minKline(int limit) {
+        // 获取300条1分钟数据（足够生成30条10分钟数据）
+        List<Vallisusdt> min1Data = getEth1minKline(Math.min(limit * 10, 300));
+
+        if (min1Data.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        // 按时间排序（升序）
+        min1Data.sort((a, b) -> Long.compare(a.getOpenTime(), b.getOpenTime()));
+
+        List<Vallisusdt> result = new ArrayList<>();
+
+        // 每10条1分钟数据聚合为1条10分钟数据
+        int count = 0;
+        Vallisusdt current10min = null;
+
+        for (Vallisusdt min1 : min1Data) {
+            if (current10min == null) {
+                // 开始新的10分钟K线
+                current10min = new Vallisusdt();
+                current10min.setOpenTime(min1.getOpenTime());
+                current10min.setOpen(min1.getOpen());
+                current10min.setHigh(min1.getHigh());
+                current10min.setLow(min1.getLow());
+                current10min.setVolume("0");
+            }
+
+            // 更新最高价和最低价
+            double currentHigh = Double.parseDouble(current10min.getHigh());
+            double newHigh = Double.parseDouble(min1.getHigh());
+            if (newHigh > currentHigh) {
+                current10min.setHigh(min1.getHigh());
+            }
+
+            double currentLow = Double.parseDouble(current10min.getLow());
+            double newLow = Double.parseDouble(min1.getLow());
+            if (newLow < currentLow) {
+                current10min.setLow(min1.getLow());
+            }
+
+            // 累加成交量
+            double volume = Double.parseDouble(current10min.getVolume()) + Double.parseDouble(min1.getVolume());
+            current10min.setVolume(String.valueOf(volume));
+
+            count++;
+
+            // 每10条完成一个10分钟K线
+            if (count >= 10) {
+                current10min.setClose(min1.getClose());
+                current10min.setCloseTime(min1.getCloseTime());
+                result.add(current10min);
+                current10min = null;
+                count = 0;
+            }
+        }
+
+        log.info("成功聚合ETH 10分钟K线数量：{}", result.size());
+        return result;
+    }
+    /**
+     * 获取币安 ETH/USDT 指定时间间隔的K线
+     * @param limit 获取数量
+     * @param interval 时间间隔（1m, 5m, 10m, 15m, 30m, 1h, 4h, 1d等）
+     */
+    public List<Vallisusdt> getEthKline(int limit, String interval) {
+        String url = "https://data-api.binance.vision/api/v3/klines?symbol=ETHUSDT&interval=" + interval + "&limit=" + limit;
+        try {
+            Object[][] dataArray = restTemplate.getForObject(url, Object[][].class);
+
+            if (dataArray == null || dataArray.length == 0) {
+                return new ArrayList<>();
+            }
+
+            List<Vallisusdt> result = new ArrayList<>();
+            for (Object[] arr : dataArray) {
+                result.add(convertToVallisusdt(arr));
+            }
+
+            log.info("成功获取ETH K线({})数量：{}", interval, result.size());
+            return result;
+
+        } catch (Exception e) {
+            log.error("拉取币安ETH K线数据异常", e);
+            return new ArrayList<>();
+        }
+    }
+
 
     /**
      * 获取币安 BTC/USDT 1分钟K线

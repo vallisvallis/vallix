@@ -115,6 +115,11 @@ public class SecurityConfig {
           .anonymous()
           .antMatchers("/druid/**")
           .anonymous()
+          // WebSocket相关接口允许匿名访问
+          .antMatchers("/system/vallisusdt/ws/**")
+          .anonymous()
+          .antMatchers("/ws/**")
+          .anonymous()
           // 除上面外的所有请求全部需要鉴权认证
           .anyRequest()
           .authenticated()
