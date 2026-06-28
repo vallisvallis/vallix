@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author d3code
  */
 @Slf4j
-@Component
+// @Component  // 暂停使用，避免与实时交易 WebSocket 客户端冲突
 public class EthKlineWebSocketHandler extends TextWebSocketHandler {
 
     @Resource
@@ -137,7 +137,7 @@ public class EthKlineWebSocketHandler extends TextWebSocketHandler {
      * 定时拉取 ETH K线数据并广播给所有客户端
      * fixedRate = 3000ms，每3秒执行一次
      */
-    @Scheduled(fixedRate = 3000)
+    // @Scheduled(fixedRate = 3000)  // 暂停定时拉取，避免与实时交易 WebSocket 客户端冲突
     public void pushEthKlineData() {
         if (CLIENTS.isEmpty()) {
             return;

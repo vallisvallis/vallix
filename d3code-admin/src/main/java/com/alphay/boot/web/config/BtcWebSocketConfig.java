@@ -14,8 +14,8 @@ import javax.annotation.Resource;
  *
  * @author d3code
  */
-@Configuration
-@EnableWebSocket
+// @Configuration  // 暂停 WebSocket 服务端，避免与实时交易客户端冲突
+// @EnableWebSocket
 public class BtcWebSocketConfig implements WebSocketConfigurer {
 
     @Resource

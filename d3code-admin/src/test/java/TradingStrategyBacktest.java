@@ -31,6 +31,7 @@ public class TradingStrategyBacktest {
     private static final long TWENTY_MINUTES_US = 1200000000L;
     private static final long TEN_MINUTES_US = 600000000L;
     private static final long ONE_MINUTE_US = 60000000L;
+    private static final long THREE_MINUTES_US = 180000000L; // 3分钟，开单时间与极值时间的最大间隔
     private static final int BATCH_WRITE_SIZE = 10000;
 
     @Test
@@ -126,10 +127,11 @@ public class TradingStrategyBacktest {
                 double maxPrice = parseDouble(allData.get(maxIndex).getClose());
                 double minPrice = parseDouble(allData.get(minIndex).getClose());
 
-                // 开单时间必须比最高价/最低价时刻晚至少1分钟
+                // 开单时间必须比最高价/最低价时刻晚至少1分钟，且不得超过3分钟
                 // 20分钟窗口范围: [maxTs - TWENTY_MINUTES_US, maxTs)
                 // 同时检查冷却时间：上次开单后至少过了一分钟才能再次开单
-                if (currentTs - maxTs >= ONE_MINUTE_US && currentTs > maxTs && maxTs != lastShortTs
+                if (currentTs - maxTs >= ONE_MINUTE_US && currentTs - maxTs <= THREE_MINUTES_US 
+                        && currentTs > maxTs && maxTs != lastShortTs
                         && (lastTradeTs == -1 || currentTs - lastTradeTs >= ONE_MINUTE_US)) {
                     TradeRecord trade = createTradeRecord(allData.get(maxIndex), "空单", maxPrice, minPrice, 
                             formatTimestamp(maxTs), formatTimestamp(minTs), dataMap, currentTs);
@@ -138,7 +140,8 @@ public class TradingStrategyBacktest {
                     lastTradeTs = currentTs; // 更新上次开单时间
                 }
 
-                if (currentTs - minTs >= ONE_MINUTE_US && currentTs > minTs && minTs != lastLongTs
+                if (currentTs - minTs >= ONE_MINUTE_US && currentTs - minTs <= THREE_MINUTES_US 
+                        && currentTs > minTs && minTs != lastLongTs
                         && (lastTradeTs == -1 || currentTs - lastTradeTs >= ONE_MINUTE_US)) {
                     TradeRecord trade = createTradeRecord(allData.get(minIndex), "多单", maxPrice, minPrice, 
                             formatTimestamp(maxTs), formatTimestamp(minTs), dataMap, currentTs);
@@ -246,6 +249,11 @@ public class TradingStrategyBacktest {
         double maxProfit = records.stream().mapToDouble(TradeRecord::getProfit).max().orElse(0);
         double minProfit = records.stream().mapToDouble(TradeRecord::getProfit).min().orElse(0);
         long winCount = records.stream().filter(TradeRecord::isWin).count();
+        long loseCount = records.size() - winCount;
+
+        // 固定收益计算：盈利+4U，亏损-5U
+        double fixedTotalProfit = winCount * 4.0 - loseCount * 5.0;
+        double fixedAvgProfit = records.isEmpty() ? 0 : fixedTotalProfit / records.size();
 
         // 统计每日开单数量
         Map<String, Long> dailyCounts = records.stream()
@@ -279,6 +287,12 @@ public class TradingStrategyBacktest {
         System.out.println("  ├─ 最大盈利: $" + String.format("%.2f", maxProfit));
         System.out.println("  └─ 最大亏损: $" + String.format("%.2f", minProfit));
         System.out.println("──────────────────────────────────────");
+        System.out.println("固定收益统计 (盈利+4U, 亏损-5U):");
+        System.out.println("  ├─ 盈利次数: " + winCount + " × 4U = +" + String.format("%.2f", winCount * 4.0) + "U");
+        System.out.println("  ├─ 亏损次数: " + loseCount + " × 5U = -" + String.format("%.2f", loseCount * 5.0) + "U");
+        System.out.println("  ├─ 固定总收益: " + (fixedTotalProfit >= 0 ? "+" : "") + String.format("%.2f", fixedTotalProfit) + "U");
+        System.out.println("  └─ 固定平均收益: " + String.format("%.2f", fixedAvgProfit) + "U/单");
+        System.out.println("──────────────────────────────────────");
     }
 
     private void saveToExcel(List<TradeRecord> records, String filePath) throws IOException {
@@ -311,6 +325,16 @@ public class TradingStrategyBacktest {
         loseFont.setColor(IndexedColors.RED.getIndex());
         loseStyle.setFont(loseFont);
 
+        // 基于最高价开单（空单）行背景色：浅红色
+        CellStyle shortRowStyle = workbook.createCellStyle();
+        shortRowStyle.setFillForegroundColor(IndexedColors.ROSE.getIndex());
+        shortRowStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
+        // 基于最低价开单（多单）行背景色：浅绿色
+        CellStyle longRowStyle = workbook.createCellStyle();
+        longRowStyle.setFillForegroundColor(IndexedColors.LIGHT_GREEN.getIndex());
+        longRowStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
         Row headerRow = sheet.createRow(0);
         String[] headers = {"序号", "开单时刻", "开单方向", "开单价格", 
                 "20分钟内最高价", "最高价时间", "20分钟内最低价", "最低价时间",
@@ -326,26 +350,34 @@ public class TradingStrategyBacktest {
         int seq = 1;
         for (TradeRecord record : records) {
             Row row = sheet.createRow(rowNum++);
-            row.createCell(0).setCellValue(seq++);
-            row.createCell(1).setCellValue(record.getOpenTime());
-            row.createCell(2).setCellValue(record.getDirection());
-            row.createCell(3).setCellValue(record.getOpenPrice());
-            row.createCell(4).setCellValue(record.getHigh20min());
-            row.createCell(5).setCellValue(record.getHigh20minTime() != null ? record.getHigh20minTime() : "-");
-            row.createCell(6).setCellValue(record.getLow20min());
-            row.createCell(7).setCellValue(record.getLow20minTime() != null ? record.getLow20minTime() : "-");
-            row.createCell(8).setCellValue(record.getTenMinuteLaterTime() != null ? record.getTenMinuteLaterTime() : "-");
-            row.createCell(9).setCellValue(record.getTenMinuteLaterPrice());
+            // 根据开单方向设置行背景色
+            CellStyle rowStyle = "空单".equals(record.getDirection()) ? shortRowStyle : longRowStyle;
 
-            Cell profitCell = row.createCell(10);
+            for (int i = 0; i < headers.length; i++) {
+                Cell cell = row.createCell(i);
+                cell.setCellStyle(rowStyle);
+            }
+
+            row.getCell(0).setCellValue(seq++);
+            row.getCell(1).setCellValue(record.getOpenTime());
+            row.getCell(2).setCellValue(record.getDirection());
+            row.getCell(3).setCellValue(record.getOpenPrice());
+            row.getCell(4).setCellValue(record.getHigh20min());
+            row.getCell(5).setCellValue(record.getHigh20minTime() != null ? record.getHigh20minTime() : "-");
+            row.getCell(6).setCellValue(record.getLow20min());
+            row.getCell(7).setCellValue(record.getLow20minTime() != null ? record.getLow20minTime() : "-");
+            row.getCell(8).setCellValue(record.getTenMinuteLaterTime() != null ? record.getTenMinuteLaterTime() : "-");
+            row.getCell(9).setCellValue(record.getTenMinuteLaterPrice());
+
+            Cell profitCell = row.getCell(10);
             profitCell.setCellValue(record.getProfit());
             profitCell.setCellStyle(record.isWin() ? winStyle : loseStyle);
 
-            Cell percentCell = row.createCell(11);
+            Cell percentCell = row.getCell(11);
             percentCell.setCellValue(String.format("%.2f", record.getProfitPercent()));
             percentCell.setCellStyle(record.isWin() ? winStyle : loseStyle);
 
-            row.createCell(12).setCellValue(record.isWin() ? "盈利" : "亏损");
+            row.getCell(12).setCellValue(record.isWin() ? "盈利" : "亏损");
 
             if (rowNum % BATCH_WRITE_SIZE == 0) {
                 sheet.flushRows();
@@ -388,6 +420,14 @@ public class TradingStrategyBacktest {
         sheet.createRow(rowNum++).createCell(0).setCellValue("总收益: $" + String.format("%.2f", totalProfit));
         sheet.createRow(rowNum++).createCell(0).setCellValue("平均收益: $" + String.format("%.2f",
                 records.stream().mapToDouble(TradeRecord::getProfit).average().orElse(0)));
+
+        rowNum++;
+        long loseCount = records.size() - winCount;
+        double fixedTotalProfit = winCount * 4.0 - loseCount * 5.0;
+        sheet.createRow(rowNum++).createCell(0).setCellValue("固定收益统计 (盈利+4U, 亏损-5U):");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("  盈利次数: " + winCount + " × 4U = +" + String.format("%.2f", winCount * 4.0) + "U");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("  亏损次数: " + loseCount + " × 5U = -" + String.format("%.2f", loseCount * 5.0) + "U");
+        sheet.createRow(rowNum++).createCell(0).setCellValue("  固定总收益: " + (fixedTotalProfit >= 0 ? "+" : "") + String.format("%.2f", fixedTotalProfit) + "U");
 
         sheet.setColumnWidth(0, 8000);
     }

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.alphay.boot.bpm.mapper.EthTradeRecordMapper">
+
+    <resultMap type="com.alphay.boot.bpm.api.domain.EthTradeRecord" id="EthTradeRecordResult">
+        <id property="id" column="id"/>
+        <result property="openTimestamp" column="open_timestamp"/>
+        <result property="direction" column="direction"/>
+        <result property="openPrice" column="open_price"/>
+        <result property="high20min" column="high_20min"/>
+        <result property="high20minTime" column="high_20min_time"/>
+        <result property="low20min" column="low_20min"/>
+        <result property="low20minTime" column="low_20min_time"/>
+        <result property="closeTimestamp" column="close_timestamp"/>
+        <result property="closePrice" column="close_price"/>
+        <result property="profit" column="profit"/>
+        <result property="profitPercent" column="profit_percent"/>
+        <result property="status" column="status"/>
+        <result property="createTime" column="create_time"/>
+        <result property="updateTime" column="update_time"/>
+        <result property="deleted" column="deleted"/>
+    </resultMap>
+
+    <select id="selectPendingRecords" resultMap="EthTradeRecordResult">
+        SELECT * FROM eth_trade_record
+        WHERE status = '待结算' AND deleted = 0
+        ORDER BY open_timestamp ASC
+    </select>
+
+    <select id="selectByTimeRange" resultMap="EthTradeRecordResult">
+        SELECT * FROM eth_trade_record
+        WHERE open_timestamp &gt;= #{startTime} AND open_timestamp &lt;= #{endTime}
+          AND deleted = 0
+        ORDER BY open_timestamp ASC
+    </select>
+
+</mapper>
