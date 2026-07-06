@@ -87,4 +87,19 @@
         delete from eth_kline_second where timestamp &lt; #{beforeTime}
     </delete>
 
+    <!-- 查找断档：LEAD()窗口函数对比相邻行时间差，只返回间隔>1秒的断档 -->
+    <select id="findGaps" resultType="java.util.HashMap">
+        SELECT prev_ts, curr_ts, gap_seconds
+        FROM (
+            SELECT
+                timestamp AS prev_ts,
+                LEAD(timestamp) OVER (ORDER BY timestamp) AS curr_ts,
+                (LEAD(timestamp) OVER (ORDER BY timestamp) - timestamp) / 1000 - 1 AS gap_seconds
+            FROM eth_kline_second
+            WHERE deleted = 0
+        ) t
+        WHERE curr_ts IS NOT NULL AND gap_seconds > 0
+        ORDER BY gap_seconds DESC
+    </select>
+
 </mapper>

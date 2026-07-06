@@ -2,8 +2,9 @@ package com.alphay.boot.bpm.service.impl;
 
 import com.alphay.boot.bpm.api.domain.EthTradeRecord;
 import com.alphay.boot.bpm.mapper.EthTradeRecordMapper;
-import com.alphay.boot.bpm.service.IEthTradeRecordService;
+import com.alphay.boot.bpm.service.impl.IEthTradeRecordService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,7 +22,6 @@ public class EthTradeRecordServiceImpl
 
     @Override
     public EthTradeRecord createTrade(EthTradeRecord record) {
-        record.setStatus("待结算");
         save(record);
         log.info("✅ 开单记录已保存: id={}, 方向={}, 价格={}",
                 record.getId(), record.getDirection(), record.getOpenPrice());
@@ -31,20 +31,18 @@ public class EthTradeRecordServiceImpl
     @Override
     public boolean settleTrade(Long id, Long closeTimestamp, String closePrice,
                                String profit, String profitPercent, String status) {
-        EthTradeRecord record = getById(id);
-        if (record == null || !"待结算".equals(record.getStatus())) {
-            return false;
-        }
-        record.setCloseTimestamp(closeTimestamp);
-        record.setClosePrice(closePrice);
-        record.setProfit(profit);
-        record.setProfitPercent(profitPercent);
-        record.setStatus(status);
-        boolean updated = updateById(record);
+        // 使用UpdateWrapper直接操作列名，避免Lombok生成的setter在运行时找不到
+        UpdateWrapper<EthTradeRecord> wrapper = new UpdateWrapper<>();
+        wrapper.eq("id", id)
+               .set("close_timestamp", closeTimestamp)
+               .set("close_price", closePrice)
+               .set("profit", profit)
+               .set("profit_percent", profitPercent)
+               .set("status", status);
+        boolean updated = update(wrapper);
         if (updated) {
-            log.info("💰 交易结算: id={}, 方向={}, 开仓={}, 平仓={}, 收益={}, 状态={}",
-                    id, record.getDirection(), record.getOpenPrice(),
-                    closePrice, profit, status);
+            log.info("💵 交易结算: id={}, 平仓={}, 收益={}, 状态={}",
+                    id, closePrice, profit, status);
         }
         return updated;
     }

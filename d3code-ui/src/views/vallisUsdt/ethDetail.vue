@@ -9,22 +9,14 @@ const connecting = ref(false)
 const showLogs = ref(false)
 const logs = ref([])
 const ethData = ref([])
-const maxDataPoints = ref(50)
+const maxDataPoints = ref(1320)
 const lastTimestamp = ref(0)
 
-// 策略状态
-const strategyEnabled = ref(false)
+// 策略状态（由后端推送，前端只负责展示）
 const tradeRecords = ref([])
 const totalTrades = ref(0)
 const winCount = ref(0)
 const totalProfit = ref(0)
-
-// 策略相关变量
-const TWENTY_MINUTES = 1200 // 20分钟 = 1200秒
-const ONE_MINUTE = 60 // 1分钟
-const lastTradeTime = ref(0)
-const lastShortTime = ref(-1)
-const lastLongTime = ref(-1)
 
 // API基础路径
 const BASE_API = '/system/vallisusdt'
@@ -97,130 +89,37 @@ const toNumber = (value) => {
   return parseFloat(value) || 0
 }
 
-// 保存K线数据到数据库
-const saveKlineData = async (data) => {
-  try {
-    const response = await axios.post(`${BASE_API}/kline/save`, data)
-    if (response.data.code === 200) {
-      addLog('success', '✅ 数据已保存到数据库')
-    } else {
-      addLog('warning', `⚠️ 保存数据失败: ${response.data.message}`)
-    }
-  } catch (error) {
-    addLog('error', `❌ 保存数据异常: ${error.message}`)
-  }
-}
-
-// 执行实时策略
-const executeRealTimeStrategy = (currentData) => {
-  if (!strategyEnabled.value || ethData.value.length < TWENTY_MINUTES) return
-
-  const currentIndex = ethData.value.length - 1
-  const windowStartIndex = Math.max(0, currentIndex - TWENTY_MINUTES)
-
-  // 计算20分钟内的最高和最低价
-  let maxPrice = ethData.value[windowStartIndex].close
-  let minPrice = ethData.value[windowStartIndex].close
-  let maxIndex = windowStartIndex
-  let minIndex = windowStartIndex
-
-  for (let i = windowStartIndex; i < currentIndex; i++) {
-    if (ethData.value[i].close > maxPrice) {
-      maxPrice = ethData.value[i].close
-      maxIndex = i
-    }
-    if (ethData.value[i].close < minPrice) {
-      minPrice = ethData.value[i].close
-      minIndex = i
-    }
-  }
-
-  const currentTs = currentData.time
-  const maxTs = ethData.value[maxIndex].time
-  const minTs = ethData.value[minIndex].time
-
-  // 检查冷却时间（每分钟只能开一单）
-  if (currentTs - lastTradeTime.value < ONE_MINUTE * 1000) return
-
-  // 开单时间必须比最高价/最低价时刻晚至少1分钟
-  if (currentTs - maxTs >= ONE_MINUTE * 1000 && maxTs !== lastShortTime.value) {
-    // 开空单
-    const trade = {
-      time: formatTime(currentTs),
-      timestamp: currentTs,
-      direction: '空单',
-      openPrice: currentData.close,
-      high20min: maxPrice.toFixed(4),
-      low20min: minPrice.toFixed(4),
+// 处理后端推送的交易事件
+const handleTradeEvent = (trade) => {
+  if (trade.type === 'open') {
+    // 开单事件
+    const record = {
+      time: formatTime(trade.time),
+      timestamp: trade.time,
+      direction: trade.direction,
+      openPrice: parseFloat(trade.openPrice),
+      high20min: trade.high20min,
+      low20min: trade.low20min,
       status: '待结算'
     }
-    tradeRecords.value.unshift(trade)
+    tradeRecords.value.unshift(record)
     if (tradeRecords.value.length > 50) tradeRecords.value.pop()
     totalTrades.value++
-    lastTradeTime.value = currentTs
-    lastShortTime.value = maxTs
-    addLog('info', `📉 开空单: ${currentData.close.toFixed(4)} (20分钟最高: ${maxPrice.toFixed(4)})`)
-
-    // 10分钟后结算
-    setTimeout(() => settleTrade(trade, maxPrice), 10 * 60 * 1000)
-  }
-
-  if (currentTs - minTs >= ONE_MINUTE * 1000 && minTs !== lastLongTime.value) {
-    // 开多单
-    const trade = {
-      time: formatTime(currentTs),
-      timestamp: currentTs,
-      direction: '多单',
-      openPrice: currentData.close,
-      high20min: maxPrice.toFixed(4),
-      low20min: minPrice.toFixed(4),
-      status: '待结算'
+    addLog('info', `${trade.direction === '多单' ? '📈' : '📉'} 开${trade.direction} @${trade.openPrice}`)
+  } else if (trade.type === 'settle') {
+    // 结算事件：匹配对应开单记录
+    const match = tradeRecords.value.find(t =>
+      t.timestamp === trade.time && t.direction === trade.direction && t.status === '待结算'
+    )
+    if (match) {
+      match.settlePrice = trade.settlePrice
+      match.profit = trade.profit
+      match.profitPercent = trade.profitPercent
+      match.status = trade.status
+      if (trade.status === '盈利') winCount.value++
+      totalProfit.value += parseFloat(trade.profit)
+      addLog('success', `💰 ${trade.direction}结算: ${trade.status} ${trade.profit >= 0 ? '+' : ''}${trade.profit}`)
     }
-    tradeRecords.value.unshift(trade)
-    if (tradeRecords.value.length > 50) tradeRecords.value.pop()
-    totalTrades.value++
-    lastTradeTime.value = currentTs
-    lastLongTime.value = minTs
-    addLog('info', `📈 开多单: ${currentData.close.toFixed(4)} (20分钟最低: ${minPrice.toFixed(4)})`)
-
-    // 10分钟后结算
-    setTimeout(() => settleTrade(trade, minPrice), 10 * 60 * 1000)
-  }
-}
-
-// 结算交易
-const settleTrade = (trade, targetPrice) => {
-  // 查找当前最新价格
-  if (ethData.value.length === 0) return
-
-  const latestData = ethData.value[ethData.value.length - 1]
-  const settlePrice = latestData.close
-
-  let profit = 0
-  if (trade.direction === '多单') {
-    profit = settlePrice - trade.openPrice
-  } else {
-    profit = trade.openPrice - settlePrice
-  }
-
-  trade.settlePrice = settlePrice.toFixed(4)
-  trade.profit = profit.toFixed(2)
-  trade.profitPercent = ((profit / trade.openPrice) * 100).toFixed(2)
-  trade.status = profit >= 0 ? '盈利' : '亏损'
-
-  if (profit >= 0) winCount.value++
-  totalProfit.value += profit
-
-  addLog('success', `💰 ${trade.direction}结算: 开仓${trade.openPrice.toFixed(4)}, 平仓${settlePrice.toFixed(4)}, 收益${profit.toFixed(2)} (${trade.status})`)
-}
-
-// 切换策略
-const toggleStrategy = () => {
-  strategyEnabled.value = !strategyEnabled.value
-  if (strategyEnabled.value) {
-    addLog('info', '🎯 实时策略已启动')
-  } else {
-    addLog('info', '⏹️ 实时策略已停止')
   }
 }
 
@@ -265,6 +164,12 @@ const updateAll10MinStats = () => {
 
 // 处理消息
 const handleWsMessage = (data) => {
+  // 交易事件（后端策略引擎推送）
+  if (data && data.trade) {
+    handleTradeEvent(data.trade)
+    return
+  }
+
   if (!data || !data.data) return
 
   addLog('info', `📥 收到数据: ${data.data.length}条`)
@@ -353,19 +258,6 @@ const handleWsMessage = (data) => {
         
         // 更新所有数据的10分钟统计
         updateAll10MinStats()
-
-        // 保存数据到数据库
-        saveKlineData({
-          timestamp: latestData.time * 1000, // 转换为微秒
-          open: latestData.open.toString(),
-          close: latestData.close.toString(),
-          high: latestData.high.toString(),
-          low: latestData.low.toString(),
-          volume: latestData.volume.toString()
-        })
-
-        // 执行实时策略
-        executeRealTimeStrategy(latestData)
       }
       
       lastTimestamp.value = latestData.time
@@ -414,13 +306,6 @@ onUnmounted(() => {
         <span class="status" :class="wsConnected ? 'online' : 'offline'">
           {{ wsConnected ? '✓ 已连接' : '✗ 未连接' }}
         </span>
-        <button 
-          @click="toggleStrategy" 
-          :class="{ 'strategy-enabled': strategyEnabled, 'strategy-disabled': !strategyEnabled }"
-          class="strategy-btn"
-        >
-          {{ strategyEnabled ? '⏹️ 停止策略' : '🎯 启动策略' }}
-        </button>
         <button @click="toggleLogs" class="log-toggle">
           {{ showLogs ? '▼ 隐藏日志' : '▲ 显示日志' }}
         </button>
@@ -492,8 +377,8 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 策略面板 -->
-    <div class="strategy-panel" v-show="strategyEnabled">
+    <!-- 策略面板（后端推送，前端展示） -->
+    <div class="strategy-panel">
       <div class="strategy-header">
         <span>🎯 实时策略监控</span>
         <div class="strategy-stats">

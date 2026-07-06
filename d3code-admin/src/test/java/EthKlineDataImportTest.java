@@ -19,7 +19,11 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -35,6 +39,9 @@ public class EthKlineDataImportTest {
 
     @Autowired
     private IEthKlineSecondService ethKlineSecondService;
+
+    @Autowired
+    private com.alphay.boot.bpm.mapper.EthKlineSecondMapper ethKlineSecondMapper;
 
     /**
      * 币安数据归档基础URL
@@ -361,6 +368,203 @@ public class EthKlineDataImportTest {
     }
 
     /**
+     * 增量同步数据：诊断数据滞后情况，下载缺失数据，保证无断档。
+     * 自动兼容微秒/毫秒两种时间戳格式。可重复执行。
+     */
+    @Test
+    public void syncDataToNow() {
+        log.info("========== 数据完整性诊断 & 增量同步 ==========");
+        try {
+            long nowMs = System.currentTimeMillis();
+            log.info("当前时间: {} ({})", nowMs, formatMs(nowMs));
+
+            // === Phase 1: 诊断 ===
+            List<EthKlineSecond> latest = ethKlineSecondService.selectRecent(1);
+            long lastDbMs;
+            boolean dbIsMicro = false;
+
+            if (latest.isEmpty()) {
+                lastDbMs = nowMs - 30L * 24 * 60 * 60 * 1000;
+                log.info("数据库为空，从30天前开始同步");
+            } else {
+                long rawTs = latest.get(0).getTimestamp();
+                dbIsMicro = rawTs > 1000000000000000L;
+                lastDbMs = dbIsMicro ? rawTs / 1000 : rawTs;
+                log.info("数据库最后记录: {} ({}) [{}]",
+                        rawTs, formatMs(lastDbMs), dbIsMicro ? "微秒" : "毫秒");
+
+                // 1.1 检测重复 & 断档（检查最近10分钟）
+                long checkStart = lastDbMs - 600_000;
+                List<EthKlineSecond> recent = ethKlineSecondService.selectByTimeRange(
+                        dbIsMicro ? checkStart * 1000 : checkStart,
+                        dbIsMicro ? (lastDbMs + 1000) * 1000 : lastDbMs + 1000);
+
+                Set<Long> seen = new HashSet<>();
+                int dupCount = 0;
+                Long prevTs = null;
+                int gapCount = 0;
+                long firstGapMs = 0;
+
+                for (EthKlineSecond r : recent) {
+                    long ts = dbIsMicro ? r.getTimestamp() / 1000 : r.getTimestamp();
+                    if (!seen.add(ts)) dupCount++;
+                    if (prevTs != null && ts - prevTs > 2000) {
+                        gapCount++;
+                        if (firstGapMs == 0) firstGapMs = prevTs;
+                        log.warn("⚠️ 断档: {} → {} (缺失{}秒)",
+                                formatMs(prevTs), formatMs(ts), (ts - prevTs) / 1000 - 1);
+                    }
+                    prevTs = ts;
+                }
+
+                if (dupCount > 0)
+                    log.warn("⚠️ 发现 {} 条重复时间戳，同步时会自动去重", dupCount);
+                if (gapCount > 0) {
+                    log.warn("⚠️ 发现 {} 处断档，将从断档处重新下载", gapCount);
+                    lastDbMs = firstGapMs;
+                }
+
+                long gapS = (nowMs - lastDbMs) / 1000;
+                log.info("数据滞后: {}秒 = {}小时 = {}天",
+                        gapS, String.format("%.1f", gapS / 3600.0), String.format("%.1f", gapS / 86400.0));
+                if (gapS < 60 && gapCount == 0) {
+                    log.info("✅ 数据完整且最新，无需同步");
+                    return;
+                }
+            }
+
+            // === Phase 2: 安全下载 ===
+            LocalDate startDate = java.time.Instant.ofEpochMilli(lastDbMs)
+                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+            LocalDate endDate = LocalDate.now().minusDays(1);
+
+            List<LocalDate> dates = new ArrayList<>();
+            LocalDate d = startDate;
+            while (!d.isAfter(endDate)) { dates.add(d); d = d.plusDays(1); }
+            log.info("需下载 {} 天: {} ~ {}", dates.size(), startDate, endDate);
+            if (dates.isEmpty()) { log.info("✅ 无需下载"); return; }
+
+            log.info("========== 开始安全下载（自动去重） ==========");
+            long t0 = System.currentTimeMillis();
+            int total = 0;
+            for (LocalDate date : dates) {
+                int n = downloadAndImportSafe(date, lastDbMs, dbIsMicro);
+                if (n > 0) { total += n; log.info("  ✅ {}: +{} 条", date, n); }
+            }
+
+            // === Phase 3: 验证 ===
+            log.info("========== 同步完成 ==========");
+            log.info("总耗时: {} 秒", (System.currentTimeMillis() - t0) / 1000);
+            log.info("新增记录: {} 条", total);
+
+            List<EthKlineSecond> after = ethKlineSecondService.selectRecent(1);
+            if (!after.isEmpty()) {
+                long latestTs = after.get(0).getTimestamp();
+                long latestMs = latestTs > 1000000000000000L ? latestTs / 1000 : latestTs;
+                long gapAfter = (nowMs - latestMs) / 1000;
+                log.info("同步后最新记录: {} ({}) 滞后: {}秒", latestTs, formatMs(latestMs), gapAfter);
+            }
+
+            // 最终验证：检查连续性
+            List<EthKlineSecond> verify = ethKlineSecondService.selectByTimeRange(
+                    dbIsMicro ? (lastDbMs - 60000) * 1000 : lastDbMs - 60000,
+                    dbIsMicro ? (nowMs + 1000) * 1000 : nowMs + 1000);
+            if (verify.size() > 1) {
+                Long prev = null;
+                int finalGaps = 0;
+                for (EthKlineSecond r : verify) {
+                    long ts = dbIsMicro ? r.getTimestamp() / 1000 : r.getTimestamp();
+                    if (prev != null && ts - prev > 2000) finalGaps++;
+                    prev = ts;
+                }
+                if (finalGaps == 0)
+                    log.info("✅ 数据连续性验证通过（{}条无断档）", verify.size());
+                else
+                    log.warn("⚠️ 仍有 {} 处断档，可能当日归档尚未生成", finalGaps);
+            }
+        } catch (Exception e) {
+            log.error("同步数据失败", e);
+        }
+    }
+
+    private String formatMs(long ms) {
+        return java.time.Instant.ofEpochMilli(ms)
+                .atZone(java.time.ZoneId.systemDefault())
+                .toLocalDateTime().toString().replace("T", " ");
+    }
+
+    private int downloadAndImportSafe(LocalDate date, long lastDbMs, boolean dbIsMicro) {
+        String dateStr = date.format(DateTimeFormatter.ISO_LOCAL_DATE);
+        String urlStr = String.format("%s/ETHUSDT-1s-%s.zip", BINANCE_ARCHIVE_URL, dateStr);
+        try {
+            Request req = new Request.Builder().url(urlStr).get().build();
+            try (Response resp = OK_HTTP_CLIENT.newCall(req).execute()) {
+                if (!resp.isSuccessful()) return resp.code() == 404 ? 0 : 0;
+                try (ZipArchiveInputStream zis = new ZipArchiveInputStream(resp.body().byteStream())) {
+                    org.apache.commons.compress.archivers.ArchiveEntry entry;
+
+                    // Step 1: 解析所有CSV，筛选 > lastDbMs 的新数据
+                    List<EthKlineSecond> allNew = new ArrayList<>();
+                    while ((entry = zis.getNextEntry()) != null) {
+                        if (!entry.isDirectory()) {
+                            byte[] content = IOUtils.toByteArray(zis);
+                            String csv = new String(content, StandardCharsets.UTF_8);
+                            int s = 0, e;
+                            while ((e = csv.indexOf('\n', s)) != -1) {
+                                String line = csv.substring(s, e).trim();
+                                s = e + 1;
+                                if (line.isEmpty()) continue;
+                                EthKlineSecond data = parseCsvLineFast(line);
+                                if (data == null) continue;
+                                long csvTsMs = data.getTimestamp();
+                                if (csvTsMs <= lastDbMs) continue;
+                                if (dbIsMicro) data.setTimestamp(csvTsMs * 1000);
+                                allNew.add(data);
+                            }
+                        }
+                    }
+
+                    if (allNew.isEmpty()) return 0;
+
+                    // Step 2: 查询DB中已存在的时间戳，构建去重集合
+                    EthKlineSecond first = allNew.get(0);
+                    EthKlineSecond last = allNew.get(allNew.size() - 1);
+                    long firstTs = dbIsMicro ? first.getTimestamp() / 1000 : first.getTimestamp();
+                    long lastTs = dbIsMicro ? last.getTimestamp() / 1000 : last.getTimestamp();
+
+                    List<EthKlineSecond> existing = ethKlineSecondService.selectByTimeRange(
+                            dbIsMicro ? firstTs * 1000 : firstTs,
+                            dbIsMicro ? lastTs * 1000 : lastTs);
+                    Set<Long> existingTs = new HashSet<>();
+                    for (EthKlineSecond ex : existing) {
+                        existingTs.add(dbIsMicro ? ex.getTimestamp() / 1000 : ex.getTimestamp());
+                    }
+
+                    // Step 3: 过滤已存在的，只插入新数据
+                    List<EthKlineSecond> batch = new ArrayList<>(BATCH_SIZE);
+                    int cnt = 0;
+                    for (EthKlineSecond data : allNew) {
+                        long ts = dbIsMicro ? data.getTimestamp() / 1000 : data.getTimestamp();
+                        if (!existingTs.contains(ts)) {
+                            batch.add(data);
+                            cnt++;
+                            if (batch.size() >= BATCH_SIZE) {
+                                ethKlineSecondService.saveBatchKlineData(batch);
+                                batch.clear();
+                            }
+                        }
+                    }
+                    if (!batch.isEmpty()) ethKlineSecondService.saveBatchKlineData(batch);
+                    return cnt;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("下载 {} 失败: {}", dateStr, e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
      * 处理ZIP数据并统计时间
      */
     private void processZipData(Response response, long startTime, int limit) throws Exception {
@@ -503,6 +707,241 @@ public class EthKlineDataImportTest {
         } catch (Exception e) {
             log.error("测试失败", e);
         }
+    }
+
+    /**
+     * 检测 eth_kline_second 表数据的时间连续性
+     *
+     * 检查项：
+     * 1. 时间断档（相邻两条记录间隔 > 1秒）
+     * 2. 重复时间戳
+     * 3. 时间戳格式（毫秒/微秒）
+     * 4. 重复数据统计
+     *
+     * 处理策略：分块查询，避免亿级数据OOM
+     */
+    @Test
+    public void testTimeContinuity() {
+        log.info("========== eth_kline_second 时间连续性检测 ==========");
+        long t0 = System.currentTimeMillis();
+
+        // 1. 获取数据范围，判断时间戳格式
+        List<EthKlineSecond> latest = ethKlineSecondService.selectRecent(1);
+        if (latest.isEmpty()) {
+            log.info("✅ 表为空，无需检测");
+            return;
+        }
+
+        long latestTs = latest.get(0).getTimestamp();
+        boolean isMicro = latestTs > 1000000000000000L;
+        long latestMs = isMicro ? latestTs / 1000 : latestTs;
+        log.info("最新记录: {} ({}) [{}]", latestTs, formatMs(latestMs), isMicro ? "微秒" : "毫秒");
+
+        // 2. 获取最早记录
+        List<EthKlineSecond> earliest = ethKlineSecondService.selectByTimeRange(
+                isMicro ? 0L : 0L,
+                isMicro ? (latestTs + 1000) : (latestTs + 1000));
+        // 改用 selectRecent 倒序后取最后一条的方式不可靠，使用大范围查询
+        long earliestMs = Long.MAX_VALUE;
+
+        // 3. 分块查询，统计断档和重复
+        long chunkSize = isMicro ? 3600_000_000L : 3600_000L; // 1小时
+        long cursor = isMicro ? 0L : 0L;
+        long totalRecords = 0;
+        long totalGaps = 0;
+        long totalDuplicates = 0;
+        long maxGapSeconds = 0;
+        long maxGapStart = 0;
+        long maxGapEnd = 0;
+        List<String> gapReport = new ArrayList<>();
+        final int MAX_GAP_REPORT = 20; // 最多记录20条断档详情
+
+        while (cursor < latestTs) {
+            long chunkEnd = Math.min(cursor + chunkSize, latestTs);
+            List<EthKlineSecond> chunk = ethKlineSecondService.selectByTimeRange(cursor, chunkEnd);
+
+            if (!chunk.isEmpty()) {
+                // 排序
+                chunk.sort(Comparator.comparingLong(EthKlineSecond::getTimestamp));
+
+                totalRecords += chunk.size();
+
+                Long prevTs = null;
+                Set<Long> seenTs = new HashSet<>();
+                for (EthKlineSecond row : chunk) {
+                    long ts = isMicro ? row.getTimestamp() / 1000 : row.getTimestamp();
+
+                    // 最早记录
+                    if (ts < earliestMs) earliestMs = ts;
+
+                    // 重复检测
+                    if (!seenTs.add(ts)) {
+                        totalDuplicates++;
+                        continue;
+                    }
+
+                    // 断档检测
+                    if (prevTs != null) {
+                        long gap = ts - prevTs;
+                        if (gap > 1000) { // 间隔 > 1秒
+                            totalGaps++;
+                            long gapSeconds = (gap / 1000) - 1;
+                            if (gapSeconds > maxGapSeconds) {
+                                maxGapSeconds = gapSeconds;
+                                maxGapStart = prevTs;
+                                maxGapEnd = ts;
+                            }
+                            if (gapReport.size() < MAX_GAP_REPORT) {
+                                gapReport.add(String.format("  %s → %s (缺失 %d秒)",
+                                        formatMs(prevTs), formatMs(ts), gapSeconds));
+                            }
+                        }
+                    }
+                    prevTs = ts;
+                }
+            }
+
+            cursor = chunkEnd + (isMicro ? 1000L : 1L);
+
+            if (totalRecords > 0 && totalRecords % 500000 == 0) {
+                log.info("  进度: {}条, 断档{}处, 重复{}条", totalRecords, totalGaps, totalDuplicates);
+            }
+        }
+
+        // 4. 汇总输出
+        long totalSeconds = (latestMs - earliestMs) / 1000;
+        long expectedRecords = totalSeconds + 1;
+        long missingRecords = expectedRecords - (totalRecords - totalDuplicates);
+
+        log.info("========== 检测结果 ==========");
+        log.info("数据范围: {} ~ {}", formatMs(earliestMs), formatMs(latestMs));
+        log.info("总跨度: {}秒 = {}小时 = {}天",
+                totalSeconds, String.format("%.1f", totalSeconds / 3600.0),
+                String.format("%.1f", totalSeconds / 86400.0));
+        log.info("实际记录: {}条 (含重复)", totalRecords);
+        log.info("期望记录: {}条 (每秒一条)", expectedRecords);
+        log.info("缺失记录: {}条 (缺失率 {:.2f}%)", missingRecords,
+                expectedRecords > 0 ? (missingRecords * 100.0 / expectedRecords) : 0);
+        log.info("断档次数: {}处", totalGaps);
+        log.info("重复记录: {}条", totalDuplicates);
+
+        if (maxGapSeconds > 0) {
+            log.info("最大断档: {}秒 ({} → {})",
+                    maxGapSeconds, formatMs(maxGapStart), formatMs(maxGapEnd));
+        }
+
+        if (!gapReport.isEmpty()) {
+            log.info("断档详情 (前{}条):", Math.min(gapReport.size(), MAX_GAP_REPORT));
+            for (String s : gapReport) {
+                log.info(s);
+            }
+        }
+
+        if (totalGaps == 0 && totalDuplicates == 0) {
+            log.info("✅ 数据时间连续性完美，无断档无重复！");
+        } else if (totalGaps == 0) {
+            log.info("⚠️ 时间连续，但发现 {} 条重复记录", totalDuplicates);
+        } else {
+            log.warn("❌ 发现 {} 处断档，需重新下载缺失数据", totalGaps);
+        }
+
+        log.info("检测耗时: {}秒", (System.currentTimeMillis() - t0) / 1000);
+    }
+
+    /**
+     * 检测 eth_kline_second 表数据的时间连续性（一条SQL版本）
+     *
+     * 使用 MySQL LEAD() 窗口函数，在数据库端直接计算相邻行时间差，
+     * 只返回断档行，无需分块遍历所有数据。
+     *
+     * 检查项：
+     * 1. 时间断档（相邻记录间隔 > 1秒）
+     * 2. 重复时间戳
+     * 3. 数据总量与期望值对比
+     */
+    @Test
+    public void testTimeContinuity2() {
+        log.info("========== eth_kline_second 时间连续性检测 ==========");
+        long t0 = System.currentTimeMillis();
+
+        // 1. 获取数据范围，判断时间戳格式
+        List<EthKlineSecond> latest = ethKlineSecondService.selectRecent(1);
+        if (latest.isEmpty()) {
+            log.info("✅ 表为空，无需检测");
+            return;
+        }
+
+        long latestTs = latest.get(0).getTimestamp();
+        boolean isMicro = latestTs > 1000000000000000L;
+        long latestMs = isMicro ? latestTs / 1000 : latestTs;
+        log.info("最新记录: {} ({})", latestTs, formatMs(latestMs));
+
+        List<EthKlineSecond> earliest = ethKlineSecondService.selectByTimeRange(
+                isMicro ? 0L : 0L, isMicro ? (latestTs + 1000) : (latestTs + 1000));
+        earliest.sort(Comparator.comparingLong(EthKlineSecond::getTimestamp));
+        long earliestMs = earliest.isEmpty() ? latestMs
+                : (isMicro ? earliest.get(0).getTimestamp() / 1000 : earliest.get(0).getTimestamp());
+
+        // 2. 一条SQL查所有断档
+        log.info("正在查询断档...");
+        List<Map<String, Object>> gaps = ethKlineSecondMapper.findGaps();
+
+        // 3. 查重复时间戳
+        List<Map<String, Object>> duplicates = ethKlineSecondMapper.selectMaps(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<EthKlineSecond>()
+                        .select("timestamp, COUNT(*) AS cnt")
+                        .groupBy("timestamp")
+                        .having("cnt > 1"));
+
+        // 4. 汇总输出
+        long totalSeconds = (latestMs - earliestMs) / 1000;
+        long expectedRecords = totalSeconds + 1;
+        long actualRecords = ethKlineSecondService.count();
+        long missingRecords = expectedRecords - actualRecords;
+
+        log.info("========== 检测结果 ==========");
+        log.info("数据范围: {} ~ {}", formatMs(earliestMs), formatMs(latestMs));
+        log.info("总跨度: {}秒 = {}小时 = {}天",
+                totalSeconds, String.format("%.1f", totalSeconds / 3600.0),
+                String.format("%.1f", totalSeconds / 86400.0));
+        log.info("实际记录: {}条, 期望记录: {}条", actualRecords, expectedRecords);
+        log.info("缺失记录: {}条 (缺失率 {}%)", missingRecords,
+                String.format("%.2f", expectedRecords > 0 ? (missingRecords * 100.0 / expectedRecords) : 0));
+        log.info("断档次数: {}处", gaps.size());
+        log.info("重复时间戳: {}组", duplicates.size());
+
+        // 5. 断档详情
+        if (!gaps.isEmpty()) {
+            long maxGap = 0;
+            String maxGapDetail = "";
+            int showCount = Math.min(gaps.size(), 20);
+            log.info("断档详情 (前{}条):", showCount);
+            for (int i = 0; i < showCount; i++) {
+                Map<String, Object> g = gaps.get(i);
+                long prev = ((Number) g.get("prev_ts")).longValue();
+                long curr = ((Number) g.get("curr_ts")).longValue();
+                long gapSec = ((Number) g.get("gap_seconds")).longValue();
+                if (gapSec > maxGap) {
+                    maxGap = gapSec;
+                    maxGapDetail = formatMs(prev) + " → " + formatMs(curr);
+                }
+                log.info("  {} → {} (缺失 {}秒)", formatMs(prev), formatMs(curr), gapSec);
+            }
+            if (gaps.size() > 20) {
+                log.info("  ...还有 {} 处断档未显示", gaps.size() - 20);
+            }
+            log.info("最大断档: {}秒 ({})", maxGap, maxGapDetail);
+        }
+
+        if (gaps.isEmpty() && duplicates.isEmpty()) {
+            log.info("✅ 数据时间连续性完美，无断档无重复！");
+        } else if (gaps.isEmpty()) {
+            log.info("⚠️ 时间连续，但有 {} 组重复时间戳", duplicates.size());
+        } else {
+            log.warn("❌ 发现 {} 处断档，需重新下载缺失数据", gaps.size());
+        }
+
+        log.info("检测耗时: {}秒", (System.currentTimeMillis() - t0) / 1000);
     }
 
     /**

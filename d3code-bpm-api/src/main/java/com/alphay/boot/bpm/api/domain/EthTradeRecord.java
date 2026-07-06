@@ -63,4 +63,7 @@ public class EthTradeRecord extends BaseEntity {
 
     /** 状态：待结算/盈利/亏损/超时 */
     private String status;
+
+    /** 策略版本：v1=0.3%阈值, v2=0.4%阈值 */
+    private String strategyVersion;
 }

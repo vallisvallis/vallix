@@ -17,6 +17,7 @@
         <result property="profit" column="profit"/>
         <result property="profitPercent" column="profit_percent"/>
         <result property="status" column="status"/>
+        <result property="strategyVersion" column="strategy_version"/>
         <result property="createTime" column="create_time"/>
         <result property="updateTime" column="update_time"/>
         <result property="deleted" column="deleted"/>

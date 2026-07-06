@@ -114,10 +114,8 @@ public class BpmTaskAssignRuleServiceImpl implements IBpmTaskAssignRuleService {
     }
 
     // 存储
-    BpmTaskAssignRule rule =
-        BpmTaskAssignRuleConvert.INSTANCE
-            .convert(requestVo)
-            .setProcessDefinitionId(BpmTaskAssignRule.PROCESS_DEFINITION_ID_NULL); // 只有流程模型，才允许新建
+    BpmTaskAssignRule rule = BpmTaskAssignRuleConvert.INSTANCE.convert(requestVo);
+    rule.setProcessDefinitionId(BpmTaskAssignRule.PROCESS_DEFINITION_ID_NULL); // 只有流程模型，才允许新建
     taskAssignRuleMapper.insert(rule);
     return rule.getId();
   }
@@ -199,12 +197,12 @@ public class BpmTaskAssignRuleServiceImpl implements IBpmTaskAssignRuleService {
     }
     // 开始复制
     List<BpmTaskAssignRule> newRules = BpmTaskAssignRuleConvert.INSTANCE.convertList2(rules);
-    newRules.forEach(
-        rule ->
-            rule.setProcessDefinitionId(processDefinitionId)
-                .setId(null)
-                .setCreateTime(null)
-                .setUpdateTime(null));
+    newRules.forEach(rule -> {
+        rule.setProcessDefinitionId(processDefinitionId);
+        rule.setId(null);
+        rule.setCreateTime(null);
+        rule.setUpdateTime(null);
+    });
     taskAssignRuleMapper.insertBatch(newRules);
   }
 

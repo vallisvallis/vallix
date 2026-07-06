@@ -3,8 +3,10 @@ package com.alphay.boot.bpm.mapper;
 import com.alphay.boot.bpm.api.domain.EthKlineSecond;
 import com.alphay.boot.bpm.api.domain.EthKlineSecondCompareVO;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * ETH秒级K线数据Mapper接口
@@ -20,7 +22,7 @@ public interface EthKlineSecondMapper extends BaseMapper<EthKlineSecond> {
      * @param endTime   结束时间（毫秒）
      * @return K线数据集合
      */
-    List<EthKlineSecond> selectByTimeRange(Long startTime, Long endTime);
+    List<EthKlineSecond> selectByTimeRange(@Param("startTime") Long startTime, @Param("endTime") Long endTime);
 
     /**
      * 查询最近N条数据
@@ -45,7 +47,7 @@ public interface EthKlineSecondMapper extends BaseMapper<EthKlineSecond> {
      * @param endTime   结束时间（毫秒）
      * @return K线数据集合
      */
-    List<EthKlineSecondCompareVO> selectByTimeRangeWithCompare(Long startTime, Long endTime);
+    List<EthKlineSecondCompareVO> selectByTimeRangeWithCompare(@Param("startTime") Long startTime, @Param("endTime") Long endTime);
 
     /**
      * 删除指定时间之前的数据（用于清理过期数据）
@@ -53,5 +55,13 @@ public interface EthKlineSecondMapper extends BaseMapper<EthKlineSecond> {
      * @param beforeTime 时间戳（毫秒）
      * @return 删除数量
      */
-    int deleteBefore(Long beforeTime);
+    int deleteBefore(@Param("beforeTime") Long beforeTime);
+
+    /**
+     * 查找数据断档（相邻两条记录时间差 > 1秒）
+     * 使用 LEAD() 窗口函数，一条SQL返回所有断档位置
+     *
+     * @return 断档信息列表，每项包含 [prev_ts, curr_ts, gap_seconds]
+     */
+    List<Map<String, Object>> findGaps();
 }

@@ -1,4 +1,4 @@
-package com.alphay.boot.bpm.service;
+package com.alphay.boot.bpm.service.impl;
 
 import com.alphay.boot.bpm.api.domain.EthTradeRecord;
 import com.baomidou.mybatisplus.extension.service.IService;

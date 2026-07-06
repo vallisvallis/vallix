@@ -2,9 +2,7 @@ package com.alphay.boot.web.websocket;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
-import com.alphay.boot.web.controller.vallix.VallisUsdtEventTool;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -14,7 +12,6 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import java.io.IOException;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -26,11 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author d3code
  */
 @Slf4j
-// @Component  // 暂停使用，避免与实时交易 WebSocket 客户端冲突
+@Component
 public class EthKlineWebSocketHandler extends TextWebSocketHandler {
-
-    @Resource
-    private VallisUsdtEventTool eventTool;
 
     /** 所有已连接的客户端 session，存储订阅的时间周期 */
     private static final Map<String, SessionInfo> CLIENTS = new ConcurrentHashMap<>();
@@ -132,48 +126,28 @@ public class EthKlineWebSocketHandler extends TextWebSocketHandler {
         return CLIENTS.size();
     }
 
-
     /**
-     * 定时拉取 ETH K线数据并广播给所有客户端
-     * fixedRate = 3000ms，每3秒执行一次
+     * 广播消息给所有已连接的前端客户端
+     * 由 EthBinanceWebSocketClient 调用，将币安实时数据推送给前端
+     *
+     * @param json 要广播的 JSON 字符串
      */
-    // @Scheduled(fixedRate = 3000)  // 暂停定时拉取，避免与实时交易 WebSocket 客户端冲突
-    public void pushEthKlineData() {
+    public void broadcast(String json) {
         if (CLIENTS.isEmpty()) {
             return;
         }
-
-        try {
-            // 获取所有订阅的时间周期
-            for (Map.Entry<String, SessionInfo> entry : CLIENTS.entrySet()) {
-                SessionInfo info = entry.getValue();
-                WebSocketSession session = info.session;
-
-                if (!session.isOpen()) {
-                    CLIENTS.remove(entry.getKey());
-                    continue;
-                }
-
+        TextMessage message = new TextMessage(json);
+        for (SessionInfo info : CLIENTS.values()) {
+            WebSocketSession session = info.session;
+            if (session.isOpen()) {
                 try {
-                    List<?> klineData = eventTool.getEthKline(100, info.interval.getValue());
-
-                    JSONObject response = new JSONObject();
-                    response.put("code", 200);
-                    response.put("data", klineData);
-
-                    String json = JSON.toJSONString(response);
-                    TextMessage message = new TextMessage(json);
-
                     synchronized (session) {
                         session.sendMessage(message);
                     }
                 } catch (IOException e) {
-                    log.error("推送 ETH K线数据失败, session: {}", session.getId(), e);
-                    CLIENTS.remove(session.getId());
+                    log.error("广播消息失败, session: {}", session.getId(), e);
                 }
             }
-        } catch (Exception e) {
-            log.error("ETH Kline 定时拉取异常", e);
         }
     }
 }

@@ -41,6 +41,7 @@ server:
 logging:
   level:
     com.alphay: debug
+    com.alphay.boot.bpm.mapper: warn
     org.springframework: warn
 
 # 用户配置
