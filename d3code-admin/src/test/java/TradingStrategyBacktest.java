@@ -66,7 +66,11 @@ public class TradingStrategyBacktest {
         V5("v5(20m/30m)", 20, 30, 3, 0, false),
         V3("v3(15m/10m)", 15, 10, 1, 0, false),
         V4("v4(30m/10m)", 30, 10, 1, 0, false),
-        V6("v6(2h/1h)", 120, 60, 1, 0, false);
+        V6("v6(2h/1h)", 120, 60, 1, 0, false),
+        // V11/V12/V13 对应 RealTimeTradingTest 中的三个实时版本
+        V11("v11(base 无过滤)", 20, 10, 3, 0, false),      // 基础版，无趋势过滤
+        V12("v12(0.3%趋势)", 20, 10, 3, 0.003, true),      // 0.3%趋势过滤
+        V13("v13(0.4%趋势)", 20, 10, 3, 0.004, true);      // 0.4%趋势过滤
 
         /** 策略名称 */
         final String name;
@@ -104,6 +108,8 @@ public class TradingStrategyBacktest {
         private String high20minTime;
         private double low20min;
         private String low20minTime;
+        private String triggerExtreme;   // 触发开单的极值
+        private String triggerExtremeTime; // 极值出现时间
         private String tenMinuteLaterTime;
         private double tenMinuteLaterPrice;
         private double profit;
@@ -132,6 +138,10 @@ public class TradingStrategyBacktest {
         public void setLow20min(double low20min) { this.low20min = low20min; }
         public String getLow20minTime() { return low20minTime; }
         public void setLow20minTime(String low20minTime) { this.low20minTime = low20minTime; }
+        public String getTriggerExtreme() { return triggerExtreme; }
+        public void setTriggerExtreme(String triggerExtreme) { this.triggerExtreme = triggerExtreme; }
+        public String getTriggerExtremeTime() { return triggerExtremeTime; }
+        public void setTriggerExtremeTime(String triggerExtremeTime) { this.triggerExtremeTime = triggerExtremeTime; }
         public String getTenMinuteLaterTime() { return tenMinuteLaterTime; }
         public void setTenMinuteLaterTime(String tenMinuteLaterTime) { this.tenMinuteLaterTime = tenMinuteLaterTime; }
         public double getTenMinuteLaterPrice() { return tenMinuteLaterPrice; }
@@ -157,11 +167,121 @@ public class TradingStrategyBacktest {
     // ==================== 测试方法 ====================
 
     /**
-     * 运行V1趋势过滤策略回测（从2026-06-1至今）
+     * 回测 RealTimeTradingTest 中的 V11/V12/V13 三个策略版本
+     * 数据时间范围：今天下午3点20分 至 当前时间
+     * 
+     * V11 = base(无过滤) - 始终开单
+     * V12 = v1(0.3%)     - 0.3%趋势过滤
+     * V13 = v2(0.4%)     - 0.4%趋势过滤
      */
     @Test
-    public void testTradingStrategy() throws IOException {
-        runBacktest(VallisStrategy.V1);
+    public void testV11V12V13FromToday1520() throws IOException {
+        System.out.println("╔══════════════════════════════════════════════════════════════╗");
+        System.out.println("║           V11/V12/V13 策略回测（数据从今天15:20开始）            ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+        System.out.println();
+
+        long globalStart = System.currentTimeMillis();
+
+        // ========== 阶段1: 加载数据（从今天下午3点20分开始） ==========
+        System.out.println("[1/3] 正在加载数据（今天15:20 至 当前）...");
+        
+        // 获取今天下午3点20分的时间戳
+        LocalDate today = LocalDate.now();
+        long startTimeMs = java.time.LocalDateTime.of(today.getYear(), today.getMonth(), today.getDayOfMonth(), 15, 20, 0)
+                .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        
+        List<EthKlineSecond> sample = ethKlineSecondMapper.selectRecent(1);
+        boolean isMicro = !sample.isEmpty() && sample.get(0).getTimestamp() > 1000000000000000L;
+        long startTs = isMicro ? startTimeMs * 1000 : startTimeMs;
+        long endTs = isMicro ? System.currentTimeMillis() * 1000 : System.currentTimeMillis();
+        
+        List<EthKlineSecond> allData = ethKlineSecondMapper.selectByTimeRange(startTs, endTs);
+
+        if (allData.isEmpty()) {
+            System.out.println("数据库中没有今天15:20之后的数据");
+            return;
+        }
+        int N = allData.size();
+        System.out.println("数据加载完成，共 " + formatNumber(N) + " 条");
+        System.out.println("时间范围: " + formatTimestamp(startTs) + " ~ " + formatTimestamp(endTs));
+
+        // ========== 阶段2: 排序 + 预计算原始数组 ==========
+        System.out.println("\n[2/3] 排序并预计算原始数组...");
+        Collections.sort(allData, Comparator.comparingLong(EthKlineSecond::getTimestamp));
+
+        long[] timestamps = new long[N];
+        double[] closes = new double[N];
+        double[] highs = new double[N];
+        double[] lows = new double[N];
+        Map<Long, Double> settlePriceMap = new HashMap<>(N);
+
+        for (int i = 0; i < N; i++) {
+            EthKlineSecond d = allData.get(i);
+            timestamps[i] = d.getTimestamp();
+            closes[i] = parseDouble(d.getClose());
+            highs[i] = parseDouble(d.getHigh());
+            lows[i] = parseDouble(d.getLow());
+            settlePriceMap.put(timestamps[i], closes[i]);
+        }
+        allData = null;
+        System.gc();
+
+        // ========== 阶段3: 执行三个版本回测 ==========
+        System.out.println("\n[3/3] 执行 V11/V12/V13 回测...\n");
+        
+        VallisStrategy[] versions = {VallisStrategy.V11, VallisStrategy.V12, VallisStrategy.V13};
+        List<VersionStats> statsList = new ArrayList<>();
+        
+        for (VallisStrategy strategy : versions) {
+            long verStart = System.currentTimeMillis();
+            List<TradeRecord> records = executeSlidingWindowStrategyFast(
+                    timestamps, closes, highs, lows, settlePriceMap, N, strategy);
+            long verEnd = System.currentTimeMillis();
+            
+            VersionStats stats = buildVersionStats(strategy.name, records, verEnd - verStart);
+            statsList.add(stats);
+            
+            System.out.println("  ✅ " + strategy.name + " 完成: " + stats.totalTrades + "单 "
+                    + String.format("盈亏%+.2fU", stats.fixedProfit) + " "
+                    + String.format("胜率%.1f%%", stats.winRate) + " "
+                    + "耗时" + formatTime(verEnd - verStart));
+        }
+
+        // ========== 输出报告 ==========
+        String line60 = createRepeatedString('=', 60);
+        System.out.println("\n" + line60);
+        System.out.println("              V11/V12/V13 回测对比报告");
+        System.out.println(line60);
+        System.out.printf("%-20s %8s %8s %8s %8s %8s %10s\n",
+                "策略", "开单", "盈利", "亏损", "胜率", "盈亏(U)", "耗时");
+        for (VersionStats s : statsList) {
+            System.out.printf("%-20s %8d %8d %8d %7.1f%% %+9.2f %10s\n",
+                    s.name, s.totalTrades, s.winCount, s.loseCount,
+                    s.winRate, s.fixedProfit, formatTime(s.elapsedMs));
+        }
+
+        long globalEnd = System.currentTimeMillis();
+        String outputPath = "D:\\trading_backtest_v11v12v13.xlsx";
+        saveAllVersionsToExcel(outputPath, versions, 
+                Arrays.asList(executeSlidingWindowStrategyFast(timestamps, closes, highs, lows, settlePriceMap, N, VallisStrategy.V11),
+                              executeSlidingWindowStrategyFast(timestamps, closes, highs, lows, settlePriceMap, N, VallisStrategy.V12),
+                              executeSlidingWindowStrategyFast(timestamps, closes, highs, lows, settlePriceMap, N, VallisStrategy.V13)),
+                statsList, globalEnd - globalStart);
+        
+        System.out.println("\n✅ 回测结果已保存到: " + outputPath);
+        System.out.println("总耗时: " + formatTime(globalEnd - globalStart));
+    }
+
+    /**
+     * 创建重复字符组成的字符串（兼容Java 8）
+     */
+    private String createRepeatedString(char c, int count) {
+        StringBuilder sb = new StringBuilder(count);
+        for (int i = 0; i < count; i++) {
+            sb.append(c);
+        }
+        return sb.toString();
     }
 
     /**
@@ -1513,6 +1633,1713 @@ public class TradingStrategyBacktest {
         }
 
         return record;
+    }
+
+    // ==================== ER 震荡/单边 判别策略 ====================
+
+    /** ER 周期：5分钟 = 300条K线 */
+    private static final int ER_LOOKBACK = 300;
+    /** ER 震荡阈值 */
+    private static final double ER_RANGING = 0.20;
+    /** ER 单边阈值 */
+    private static final double ER_TRENDING = 0.65;
+
+    /**
+     * ER 震荡市极值回归策略回测
+     *
+     * 逻辑：
+     * 1. 计算 5 分钟效率比率（ER），判断震荡/单边
+     * 2. 震荡市：检查过去 20 分钟窗口，当前价是否为极值
+     *    - 当前价 = 窗口最低价 → 开多
+     *    - 当前价 = 窗口最高价 → 开空
+     * 3. 单边市：跳过，不交易
+     * 4. 10 分钟后结算，统计盈亏
+     */
+    @Test
+    public void testERStrategy() throws IOException {
+        System.out.println("╔══════════════════════════════════════════════════════════════╗");
+        System.out.println("║     ETH/USDT ER震荡市极值回归策略回测                         ║");
+        System.out.println("║     5分钟ER判市 → 20分钟极值 → 10分钟结算                    ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+        System.out.println();
+
+        long t0 = System.currentTimeMillis();
+
+        // ========== 1. 加载全量数据 ==========
+        System.out.println("[1/4] 加载全量数据...");
+        List<EthKlineSecond> sample = ethKlineSecondMapper.selectRecent(1);
+        if (sample.isEmpty()) { System.out.println("数据库无数据"); return; }
+        boolean isMicro = sample.get(0).getTimestamp() > 1000000000000000L;
+
+        List<EthKlineSecond> allData = ethKlineSecondMapper.selectByTimeRange(0L, Long.MAX_VALUE);
+        if (allData.isEmpty()) { System.out.println("数据库无数据"); return; }
+
+        Collections.sort(allData, Comparator.comparingLong(EthKlineSecond::getTimestamp));
+        int N = allData.size();
+        System.out.println("  加载完成: " + formatNumber(N) + " 条, 时间戳格式: " + (isMicro ? "微秒" : "毫秒"));
+
+        // ========== 2. 预计算原始数组 ==========
+        System.out.println("\n[2/4] 预计算原始数组...");
+        long[] timestamps = new long[N];
+        double[] closes = new double[N];
+        double[] highs = new double[N];
+        double[] lows = new double[N];
+
+        for (int i = 0; i < N; i++) {
+            EthKlineSecond d = allData.get(i);
+            timestamps[i] = d.getTimestamp();
+            closes[i] = parseDouble(d.getClose());
+            highs[i] = parseDouble(d.getHigh());
+            lows[i] = parseDouble(d.getLow());
+        }
+
+        // 预计算绝对价格变化数组（ER 滑动窗口用）
+        double[] absChanges = new double[N];
+        absChanges[0] = 0;
+        for (int i = 1; i < N; i++) {
+            absChanges[i] = Math.abs(closes[i] - closes[i - 1]);
+        }
+
+        allData = null;
+        System.gc();
+        System.out.println("  预计算完成: " + formatNumber(N) + " 条");
+
+        // ========== 3. 回测主循环 ==========
+        System.out.println("\n[3/4] 执行回测...");
+        long twentyMinUs = 20 * 60 * (isMicro ? 1000000L : 1000L);
+        long tenMinUs = 10 * 60 * (isMicro ? 1000000L : 1000L);
+        int warmup = Math.max(ER_LOOKBACK, 20 * 60); // 取 5分钟 和 20分钟 中较大者
+
+        // 单调队列（20分钟窗口极值）
+        int[] maxDeque = new int[N];
+        int[] minDeque = new int[N];
+        int maxHead = 0, maxTail = 0, minHead = 0, minTail = 0;
+        int left = 0;
+
+        // ER 滑动窗口累加和
+        double erSum = 0;
+
+        // 统计
+        int totalTrades = 0, wins = 0;
+        int skippedTrending = 0, skippedNonExtreme = 0, skippedDuplicate = 0, skippedByHour = 0;
+        int rangingTrades = 0, rangingWins = 0;
+        int consecutiveLose = 0, maxConsecutiveLose = 0;
+        double totalProfit = 0;
+
+        List<TradeRecord> records = new ArrayList<>();
+
+        // 去重：同一极值价只开一单
+        double lastMaxPrice = -1;
+        double lastMinPrice = -1;
+
+        for (int right = 0; right < N; right++) {
+            long currentTs = timestamps[right];
+            double currentHigh = highs[right];
+            double currentLow = lows[right];
+            double currentClose = closes[right];
+
+            // 单调队列维护
+            while (maxHead < maxTail && highs[maxDeque[maxTail - 1]] <= currentHigh) maxTail--;
+            maxDeque[maxTail++] = right;
+            while (minHead < minTail && lows[minDeque[minTail - 1]] >= currentLow) minTail--;
+            minDeque[minTail++] = right;
+
+            // 滑动窗口左边界
+            long windowStart = currentTs - twentyMinUs;
+            while (left < right && timestamps[left] < windowStart) {
+                if (maxHead < maxTail && maxDeque[maxHead] == left) maxHead++;
+                if (minHead < minTail && minDeque[minHead] == left) minHead++;
+                left++;
+            }
+
+            // 更新 ER 滑动窗口累加和
+            if (right > 0) {
+                erSum += absChanges[right];
+                if (right > ER_LOOKBACK) {
+                    erSum -= absChanges[right - ER_LOOKBACK];
+                }
+            }
+
+            // 预热阶段跳过
+            if (right < warmup) continue;
+
+            // 计算 ER 并判断市场状态
+            double er = -1;
+            if (right >= ER_LOOKBACK && erSum > 0) {
+                double netChange = Math.abs(closes[right] - closes[right - ER_LOOKBACK]);
+                er = netChange / erSum;
+            }
+            boolean isRanging = er >= 0 && er < ER_RANGING;
+            boolean isTrending = er > ER_TRENDING;
+
+            // 单边市跳过
+            if (isTrending) {
+                skippedTrending++;
+                continue;
+            }
+
+            // 震荡市：检查当前是否为极值
+            if (!isRanging || right - left < 60 || maxHead >= maxTail || minHead >= minTail) {
+                continue;
+            }
+
+            // 时段过滤：只在高胜率时段交易（北京时间: 00-01, 06-07, 12-13, 15, 19, 22-23）
+            long epochSecond = timestamps[right] / (isMicro ? 1000000L : 1000L);
+            int hour = java.time.Instant.ofEpochSecond(epochSecond)
+                    .atZone(ZoneId.systemDefault()).getHour();
+            boolean allowedHour = hour == 0 || hour == 1 || hour == 6 || hour == 7
+                    || hour == 12 || hour == 13 || hour == 15
+                    || hour == 19 || hour == 22 || hour == 23;
+            if (!allowedHour) {
+                skippedByHour++;
+                continue;
+            }
+
+            int maxIdx = maxDeque[maxHead];
+            int minIdx = minDeque[minHead];
+            double windowMax = highs[maxIdx];
+            double windowMin = lows[minIdx];
+
+            boolean isHighExtreme = currentHigh >= windowMax;
+            boolean isLowExtreme = currentLow <= windowMin;
+
+            if (!isHighExtreme && !isLowExtreme) {
+                skippedNonExtreme++;
+                continue;
+            }
+
+            // 同一极值价只开一单
+            if (isHighExtreme && Math.abs(windowMax - lastMaxPrice) < 1e-8) {
+                skippedDuplicate++;
+                continue;
+            }
+            if (isLowExtreme && Math.abs(windowMin - lastMinPrice) < 1e-8) {
+                skippedDuplicate++;
+                continue;
+            }
+            if (isHighExtreme) lastMaxPrice = windowMax;
+            if (isLowExtreme) lastMinPrice = windowMin;
+
+            // 查找 10 分钟后的结算价
+            long settleTs = currentTs + tenMinUs;
+            int settleIdx = java.util.Arrays.binarySearch(timestamps, right, Math.min(N - 1, right + 1200), settleTs);
+            if (settleIdx < 0) settleIdx = -settleIdx - 1;
+            if (settleIdx >= N) continue;
+            double settlePrice = closes[settleIdx];
+
+            TradeRecord rec = new TradeRecord();
+            rec.setOpenTimestamp(currentTs);
+            rec.setOpenTime(formatTimestamp(currentTs));
+            rec.setOpenPrice(currentClose);
+            rec.setHigh20min(windowMax);
+            rec.setLow20min(windowMin);
+            rec.setHigh20minTime(formatTimestamp(timestamps[maxIdx]));
+            rec.setLow20minTime(formatTimestamp(timestamps[minIdx]));
+            rec.setTenMinuteLaterPrice(settlePrice);
+            rec.setTenMinuteLaterTime(formatTimestamp(settleTs));
+
+            if (isHighExtreme) {
+                // 开空：当前价是窗口最高价
+                rec.setDirection("空单");
+                rec.setTriggerExtreme("最高价 " + String.format("%.4f", windowMax));
+                rec.setTriggerExtremeTime(formatTimestamp(timestamps[maxIdx]));
+                double rawProfit = currentClose - settlePrice;
+                boolean isWin = rawProfit > 0;
+                rec.setProfit(isWin ? 4.0 : -5.0);
+                rec.setProfitPercent((rawProfit / currentClose) * 100);
+                rec.setWin(isWin);
+            } else {
+                // 开多：当前价是窗口最低价
+                rec.setDirection("多单");
+                rec.setTriggerExtreme("最低价 " + String.format("%.4f", windowMin));
+                rec.setTriggerExtremeTime(formatTimestamp(timestamps[minIdx]));
+                double rawProfit = settlePrice - currentClose;
+                boolean isWin = rawProfit > 0;
+                rec.setProfit(isWin ? 4.0 : -5.0);
+                rec.setProfitPercent((rawProfit / currentClose) * 100);
+                rec.setWin(isWin);
+            }
+
+            records.add(rec);
+            totalTrades++;
+            totalProfit += rec.getProfit();
+            rangingTrades++;
+            if (rec.isWin()) {
+                wins++;
+                rangingWins++;
+                consecutiveLose = 0;
+            } else {
+                consecutiveLose++;
+                if (consecutiveLose > maxConsecutiveLose) maxConsecutiveLose = consecutiveLose;
+            }
+
+            // 进度日志
+            if (right % 100000 == 0) {
+                System.out.println("  进度: " + formatNumber(right) + "/" + formatNumber(N)
+                        + " (" + String.format("%.1f%%", right * 100.0 / N) + ")"
+                        + " 交易:" + totalTrades + " 跳过:" + skippedTrending);
+            }
+        }
+
+        long t1 = System.currentTimeMillis();
+        double winRate = totalTrades > 0 ? wins * 100.0 / totalTrades : 0;
+        double rangingWinRate = rangingTrades > 0 ? rangingWins * 100.0 / rangingTrades : 0;
+
+        // ========== 4. 输出报告 ==========
+        System.out.println("\n[4/4] 回测报告");
+        System.out.println("═══════════════════════════════════════════════════════════");
+        System.out.println("  数据总量:       " + formatNumber(N));
+        System.out.println("  时间范围:       " + formatTimestamp(timestamps[0]) + " ~ " + formatTimestamp(timestamps[N - 1]));
+        System.out.println("  ER周期:         5分钟 (" + ER_LOOKBACK + "条K线)");
+        System.out.println("  震荡阈值:       ER < " + ER_RANGING);
+        System.out.println("  单边阈值:       ER > " + ER_TRENDING);
+        System.out.println("  极值窗口:       20分钟");
+        System.out.println("  结算时间:       10分钟");
+        System.out.println("───────────────────────────────────────────────────────────");
+        System.out.println("  震荡市总交易:   " + totalTrades);
+        System.out.println("  震荡市胜场:     " + rangingWins);
+        System.out.println("  震荡市胜率:     " + String.format("%.2f%%", rangingWinRate));
+        System.out.println("  单边市跳过:     " + skippedTrending);
+        System.out.println("  非极值跳过:     " + skippedNonExtreme);
+        System.out.println("  重复跳过:       " + skippedDuplicate);
+        System.out.println("  时段跳过:       " + skippedByHour);
+        System.out.println("  总盈亏:         " + String.format("%+.2f U", totalProfit));
+        System.out.println("  最大连亏:       " + maxConsecutiveLose);
+        System.out.println("───────────────────────────────────────────────────────────");
+        System.out.println("  回测耗时:       " + formatTime(t1 - t0));
+
+        // 保存到 Excel
+        String outputPath = "D:\\trading_er_strategy.xlsx";
+        saveToExcel(records, outputPath, "ER震荡策略");
+        System.out.println("  结果已保存:     " + outputPath);
+        System.out.println("═══════════════════════════════════════════════════════════");
+    }
+
+    private void saveToExcel(List<TradeRecord> records, String path, String sheetName) throws IOException {
+        SXSSFWorkbook workbook = new SXSSFWorkbook(100);
+        SXSSFSheet sheet = workbook.createSheet(sheetName);
+        sheet.trackAllColumnsForAutoSizing();
+        String[] headers = {"开单时间", "方向", "开单价", "20分钟最高价", "最高价时间", "20分钟最低价", "最低价时间",
+                "触发极值", "极值时间", "10分钟后价格", "10分钟后时间", "盈亏", "盈亏%", "结果"};
+
+        // 表头样式
+        CellStyle headerStyle = workbook.createCellStyle();
+        Font headerFont = workbook.createFont();
+        headerFont.setBold(true);
+        headerStyle.setFont(headerFont);
+
+        // 高亮表头样式（触发极值、极值时间）
+        CellStyle highlightHeaderStyle = workbook.createCellStyle();
+        highlightHeaderStyle.setFont(headerFont);
+        highlightHeaderStyle.setFillForegroundColor(IndexedColors.GOLD.getIndex());
+        highlightHeaderStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
+        // 高亮数据样式
+        CellStyle highlightDataStyle = workbook.createCellStyle();
+        highlightDataStyle.setFillForegroundColor(IndexedColors.LIGHT_YELLOW.getIndex());
+        highlightDataStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
+        Row headerRow = sheet.createRow(0);
+        for (int i = 0; i < headers.length; i++) {
+            Cell cell = headerRow.createCell(i);
+            cell.setCellValue(headers[i]);
+            cell.setCellStyle(i == 7 || i == 8 ? highlightHeaderStyle : headerStyle);
+        }
+
+        int rowIdx = 1;
+        for (TradeRecord r : records) {
+            Row row = sheet.createRow(rowIdx++);
+            row.createCell(0).setCellValue(r.getOpenTime());
+            row.createCell(1).setCellValue(r.getDirection());
+            row.createCell(2).setCellValue(r.getOpenPrice());
+            row.createCell(3).setCellValue(r.getHigh20min());
+            row.createCell(4).setCellValue(r.getHigh20minTime());
+            row.createCell(5).setCellValue(r.getLow20min());
+            row.createCell(6).setCellValue(r.getLow20minTime());
+
+            Cell triggerCell = row.createCell(7);
+            triggerCell.setCellValue(r.getTriggerExtreme() != null ? r.getTriggerExtreme() : "");
+            triggerCell.setCellStyle(highlightDataStyle);
+
+            Cell triggerTimeCell = row.createCell(8);
+            triggerTimeCell.setCellValue(r.getTriggerExtremeTime() != null ? r.getTriggerExtremeTime() : "");
+            triggerTimeCell.setCellStyle(highlightDataStyle);
+
+            row.createCell(9).setCellValue(r.getTenMinuteLaterPrice());
+            row.createCell(10).setCellValue(r.getTenMinuteLaterTime());
+            row.createCell(11).setCellValue(r.getProfit());
+            row.createCell(12).setCellValue(r.getProfitPercent());
+            row.createCell(13).setCellValue(r.isWin() ? "胜利" : "亏损");
+        }
+
+        for (int i = 0; i < headers.length; i++) {
+            sheet.autoSizeColumn(i);
+        }
+
+        try (FileOutputStream fos = new FileOutputStream(path)) {
+            workbook.write(fos);
+        }
+        workbook.close();
+        workbook.dispose();
+    }
+
+    /**
+     * 极值窗口网格搜索：遍历不同窗口大小，找出最优极值时间范围
+     * 固定参数：ER 5分钟判市(震荡<0.20)，时段过滤，10分钟结算，+4U/-5U
+     * 变量：极值窗口 5/10/15/20/25/30/40/50/60/90/120 分钟
+     */
+    @Test
+    public void testExtremeWindowGrid() throws IOException {
+        System.out.println("╔══════════════════════════════════════════════════════════════╗");
+        System.out.println("║     极值窗口网格搜索 — 找最优极值时间范围                      ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+        System.out.println();
+
+        long t0 = System.currentTimeMillis();
+
+        // ========== 1. 加载全量数据 ==========
+        System.out.println("[1/3] 加载全量数据...");
+        List<EthKlineSecond> sample = ethKlineSecondMapper.selectRecent(1);
+        if (sample.isEmpty()) { System.out.println("数据库无数据"); return; }
+        boolean isMicro = sample.get(0).getTimestamp() > 1000000000000000L;
+
+        List<EthKlineSecond> allData = ethKlineSecondMapper.selectByTimeRange(0L, Long.MAX_VALUE);
+        if (allData.isEmpty()) { System.out.println("数据库无数据"); return; }
+
+        Collections.sort(allData, Comparator.comparingLong(EthKlineSecond::getTimestamp));
+        int N = allData.size();
+        System.out.println("  加载完成: " + formatNumber(N) + " 条, 时间戳格式: " + (isMicro ? "微秒" : "毫秒"));
+
+        // 预计算原始数组
+        System.out.println("  预计算原始数组...");
+        long[] timestamps = new long[N];
+        double[] closes = new double[N];
+        double[] highs = new double[N];
+        double[] lows = new double[N];
+
+        for (int i = 0; i < N; i++) {
+            EthKlineSecond d = allData.get(i);
+            timestamps[i] = d.getTimestamp();
+            closes[i] = parseDouble(d.getClose());
+            highs[i] = parseDouble(d.getHigh());
+            lows[i] = parseDouble(d.getLow());
+        }
+
+        double[] absChanges = new double[N];
+        absChanges[0] = 0;
+        for (int i = 1; i < N; i++) {
+            absChanges[i] = Math.abs(closes[i] - closes[i - 1]);
+        }
+
+        allData = null;
+        System.gc();
+
+        long tenMinUs = 10 * 60 * (isMicro ? 1000000L : 1000L);
+
+        // 极值窗口候选（分钟）
+        int[] windowMinutes = {5, 10, 15, 20, 25, 30, 40, 50, 60, 90, 120};
+
+        // 结果收集
+        List<String[]> gridResults = new ArrayList<>();
+        gridResults.add(new String[]{"窗口(分钟)", "交易数", "胜利", "亏损", "胜率%", "空单数", "空胜率%",
+                "多单数", "多胜率%", "总盈亏U", "最大连亏", "单边跳过", "时段跳过", "重复跳过", "耗时"});
+
+        System.out.println("\n[2/3] 开始网格搜索 (" + windowMinutes.length + " 个窗口)...");
+
+        for (int wi = 0; wi < windowMinutes.length; wi++) {
+            int winMin = windowMinutes[wi];
+            long wStart = System.currentTimeMillis();
+
+            long windowUs = winMin * 60L * (isMicro ? 1000000L : 1000L);
+            int warmup = Math.max(ER_LOOKBACK, winMin * 60);
+
+            // 单调队列
+            int[] maxDeque = new int[N];
+            int[] minDeque = new int[N];
+            int maxHead = 0, maxTail = 0, minHead = 0, minTail = 0;
+            int left = 0;
+
+            double erSum = 0;
+
+            int totalTrades = 0, wins = 0;
+            int skippedTrending = 0, skippedDuplicate = 0, skippedByHour = 0;
+            int shortTrades = 0, shortWins = 0;
+            int longTrades = 0, longWins = 0;
+            int consecutiveLose = 0, maxConsecutiveLose = 0;
+            double totalProfit = 0;
+
+            double lastMaxPrice = -1;
+            double lastMinPrice = -1;
+
+            for (int right = 0; right < N; right++) {
+                long currentTs = timestamps[right];
+                double currentHigh = highs[right];
+                double currentLow = lows[right];
+                double currentClose = closes[right];
+
+                // 单调队列维护
+                while (maxHead < maxTail && highs[maxDeque[maxTail - 1]] <= currentHigh) maxTail--;
+                maxDeque[maxTail++] = right;
+                while (minHead < minTail && lows[minDeque[minTail - 1]] >= currentLow) minTail--;
+                minDeque[minTail++] = right;
+
+                // 滑动窗口左边界
+                long windowStart = currentTs - windowUs;
+                while (left < right && timestamps[left] < windowStart) {
+                    if (maxHead < maxTail && maxDeque[maxHead] == left) maxHead++;
+                    if (minHead < minTail && minDeque[minHead] == left) minHead++;
+                    left++;
+                }
+
+                // ER 滑动窗口
+                if (right > 0) {
+                    erSum += absChanges[right];
+                    if (right > ER_LOOKBACK) {
+                        erSum -= absChanges[right - ER_LOOKBACK];
+                    }
+                }
+
+                if (right < warmup) continue;
+
+                // ER 判市
+                double er = -1;
+                if (right >= ER_LOOKBACK && erSum > 0) {
+                    double netChange = Math.abs(closes[right] - closes[right - ER_LOOKBACK]);
+                    er = netChange / erSum;
+                }
+                boolean isRanging = er >= 0 && er < ER_RANGING;
+                boolean isTrending = er > ER_TRENDING;
+
+                if (isTrending) { skippedTrending++; continue; }
+                if (!isRanging || right - left < 60 || maxHead >= maxTail || minHead >= minTail) continue;
+
+                // 时段过滤
+                long epochSecond = timestamps[right] / (isMicro ? 1000000L : 1000L);
+                int hour = java.time.Instant.ofEpochSecond(epochSecond)
+                        .atZone(ZoneId.systemDefault()).getHour();
+                boolean allowedHour = hour == 0 || hour == 1 || hour == 6 || hour == 7
+                        || hour == 12 || hour == 13 || hour == 15
+                        || hour == 19 || hour == 22 || hour == 23;
+                if (!allowedHour) { skippedByHour++; continue; }
+
+                int maxIdx = maxDeque[maxHead];
+                int minIdx = minDeque[minHead];
+                double windowMax = highs[maxIdx];
+                double windowMin = lows[minIdx];
+
+                boolean isHighExtreme = currentHigh >= windowMax;
+                boolean isLowExtreme = currentLow <= windowMin;
+
+                if (!isHighExtreme && !isLowExtreme) continue;
+
+                // 去重
+                if (isHighExtreme && Math.abs(windowMax - lastMaxPrice) < 1e-8) {
+                    skippedDuplicate++; continue;
+                }
+                if (isLowExtreme && Math.abs(windowMin - lastMinPrice) < 1e-8) {
+                    skippedDuplicate++; continue;
+                }
+                if (isHighExtreme) lastMaxPrice = windowMax;
+                if (isLowExtreme) lastMinPrice = windowMin;
+
+                // 结算
+                long settleTs = currentTs + tenMinUs;
+                int settleIdx = java.util.Arrays.binarySearch(timestamps, right, Math.min(N - 1, right + 1200), settleTs);
+                if (settleIdx < 0) settleIdx = -settleIdx - 1;
+                if (settleIdx >= N) continue;
+                double settlePrice = closes[settleIdx];
+
+                boolean isWin;
+                if (isHighExtreme) {
+                    isWin = currentClose > settlePrice;
+                    shortTrades++;
+                    if (isWin) shortWins++;
+                } else {
+                    isWin = settlePrice > currentClose;
+                    longTrades++;
+                    if (isWin) longWins++;
+                }
+
+                totalTrades++;
+                totalProfit += isWin ? 4.0 : -5.0;
+                if (isWin) {
+                    wins++;
+                    consecutiveLose = 0;
+                } else {
+                    consecutiveLose++;
+                    if (consecutiveLose > maxConsecutiveLose) maxConsecutiveLose = consecutiveLose;
+                }
+            }
+
+            long wElapsed = System.currentTimeMillis() - wStart;
+            double winRate = totalTrades > 0 ? wins * 100.0 / totalTrades : 0;
+            double shortWinRate = shortTrades > 0 ? shortWins * 100.0 / shortTrades : 0;
+            double longWinRate = longTrades > 0 ? longWins * 100.0 / longTrades : 0;
+
+            gridResults.add(new String[]{
+                    String.valueOf(winMin),
+                    String.valueOf(totalTrades),
+                    String.valueOf(wins),
+                    String.valueOf(totalTrades - wins),
+                    String.format("%.2f", winRate),
+                    String.valueOf(shortTrades),
+                    String.format("%.2f", shortWinRate),
+                    String.valueOf(longTrades),
+                    String.format("%.2f", longWinRate),
+                    String.format("%+.2f", totalProfit),
+                    String.valueOf(maxConsecutiveLose),
+                    String.valueOf(skippedTrending),
+                    String.valueOf(skippedByHour),
+                    String.valueOf(skippedDuplicate),
+                    formatTime(wElapsed)
+            });
+
+            System.out.println(String.format("  [%d/%d] %d分钟窗口 | 交易:%d | 胜率:%.2f%% | 盈亏:%+.1fU | 耗时:%s",
+                    wi + 1, windowMinutes.length, winMin, totalTrades, winRate, totalProfit, formatTime(wElapsed)));
+        }
+
+        // ========== 3. 输出 CSV ==========
+        long t1 = System.currentTimeMillis();
+        String csvPath = "D:\\extreme_window_grid.csv";
+        try (java.io.PrintWriter pw = new java.io.PrintWriter(
+                new java.io.OutputStreamWriter(new java.io.FileOutputStream(csvPath), "UTF-8"))) {
+            for (String[] row : gridResults) {
+                pw.println(String.join(",", row));
+            }
+        }
+
+        System.out.println("\n[3/3] 网格搜索完成");
+        System.out.println("═══════════════════════════════════════════════════════════");
+        System.out.println("  总耗时:         " + formatTime(t1 - t0));
+        System.out.println("  结果已保存:     " + csvPath);
+        System.out.println("═══════════════════════════════════════════════════════════");
+    }
+
+    /**
+     * 事件合约全网格搜索：极值窗口 × 结算时间 = 找最优方案
+     *
+     * 结算规则（事件合约）：
+     *   10分钟: 胜利得开单金额的80%, 失败全亏(-100%)
+     *   30分钟/1小时/1天: 胜利得85%, 失败全亏(-100%)
+     *
+     * 网格维度:
+     *   X轴: 极值窗口 5/10/15/20/25/30/40/50/60/90/120 分钟
+     *   Y轴: 结算时间 10分钟/30分钟/1小时/1天
+     *
+     * 固定参数: ER 5分钟判市(震荡<0.20), 时段过滤, 同一极值只开一单
+     */
+    @Test
+    public void testFullGridSearch() throws IOException {
+        System.out.println("╔══════════════════════════════════════════════════════════════╗");
+        System.out.println("║     事件合约全网格搜索 — 极值窗口 × 结算时间                    ║");
+        System.out.println("║     10分钟(80%) / 30分钟/1小时/1天(85%)                       ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+        System.out.println();
+
+        long t0 = System.currentTimeMillis();
+
+        // ========== 1. 加载全量数据 ==========
+        System.out.println("[1/3] 加载全量数据...");
+        List<EthKlineSecond> sample = ethKlineSecondMapper.selectRecent(1);
+        if (sample.isEmpty()) { System.out.println("数据库无数据"); return; }
+        boolean isMicro = sample.get(0).getTimestamp() > 1000000000000000L;
+
+        List<EthKlineSecond> allData = ethKlineSecondMapper.selectByTimeRange(0L, Long.MAX_VALUE);
+        if (allData.isEmpty()) { System.out.println("数据库无数据"); return; }
+
+        Collections.sort(allData, Comparator.comparingLong(EthKlineSecond::getTimestamp));
+        int N = allData.size();
+        System.out.println("  加载完成: " + formatNumber(N) + " 条, 时间戳格式: " + (isMicro ? "微秒" : "毫秒"));
+
+        // 预计算原始数组
+        System.out.println("  预计算原始数组...");
+        long[] timestamps = new long[N];
+        double[] closes = new double[N];
+        double[] highs = new double[N];
+        double[] lows = new double[N];
+
+        for (int i = 0; i < N; i++) {
+            EthKlineSecond d = allData.get(i);
+            timestamps[i] = d.getTimestamp();
+            closes[i] = parseDouble(d.getClose());
+            highs[i] = parseDouble(d.getHigh());
+            lows[i] = parseDouble(d.getLow());
+        }
+
+        double[] absChanges = new double[N];
+        absChanges[0] = 0;
+        for (int i = 1; i < N; i++) {
+            absChanges[i] = Math.abs(closes[i] - closes[i - 1]);
+        }
+
+        allData = null;
+        System.gc();
+
+        // 极值窗口候选（分钟）
+        int[] windowMinutes = {5, 10, 15, 20, 25, 30, 40, 50, 60, 90, 120};
+
+        // 结算时间定义: {名称, 分钟数, 胜率收益}
+        String[][] settleDefs = {
+                {"10分钟", "10", "0.80"},
+                {"30分钟", "30", "0.85"},
+                {"1小时", "60", "0.85"},
+                {"1天", "1440", "0.85"},
+        };
+
+        // 结果收集
+        List<String[]> gridResults = new ArrayList<>();
+        gridResults.add(new String[]{"极值窗口(分)", "结算时间", "胜率收益", "交易数", "胜利", "亏损",
+                "胜率%", "空单数", "空胜率%", "多单数", "多胜率%", "总盈亏(U)", "盈亏平衡胜率%",
+                "最大连亏", "单边跳过", "时段跳过", "重复跳过", "耗时"});
+
+        int totalCombos = windowMinutes.length * settleDefs.length;
+        System.out.println("\n[2/3] 开始全网格搜索 (" + totalCombos + " 种组合)...");
+
+        int comboIdx = 0;
+        for (String[] settleDef : settleDefs) {
+            String settleName = settleDef[0];
+            int settleMinutes = Integer.parseInt(settleDef[1]);
+            double winReturn = Double.parseDouble(settleDef[2]);
+            long settleUs = settleMinutes * 60L * (isMicro ? 1000000L : 1000L);
+            double beRate = 1.0 / (1.0 + winReturn) * 100; // 盈亏平衡胜率
+
+            for (int winMin : windowMinutes) {
+                comboIdx++;
+                long wStart = System.currentTimeMillis();
+
+                long windowUs = winMin * 60L * (isMicro ? 1000000L : 1000L);
+                int warmup = Math.max(ER_LOOKBACK, Math.max(winMin * 60, settleMinutes * 60));
+
+                int[] maxDeque = new int[N];
+                int[] minDeque = new int[N];
+                int maxHead = 0, maxTail = 0, minHead = 0, minTail = 0;
+                int left = 0;
+
+                double erSum = 0;
+
+                int totalTrades = 0, wins = 0;
+                int skippedTrending = 0, skippedDuplicate = 0, skippedByHour = 0;
+                int shortTrades = 0, shortWins = 0;
+                int longTrades = 0, longWins = 0;
+                int consecutiveLose = 0, maxConsecutiveLose = 0;
+                double totalProfit = 0;
+
+                double lastMaxPrice = -1;
+                double lastMinPrice = -1;
+
+                // 结算搜索范围: 1天需要更大的搜索范围
+                int settleSearchRange = Math.min(N - 1, settleMinutes * 60 + 1200);
+
+                for (int right = 0; right < N; right++) {
+                    long currentTs = timestamps[right];
+                    double currentHigh = highs[right];
+                    double currentLow = lows[right];
+                    double currentClose = closes[right];
+
+                    while (maxHead < maxTail && highs[maxDeque[maxTail - 1]] <= currentHigh) maxTail--;
+                    maxDeque[maxTail++] = right;
+                    while (minHead < minTail && lows[minDeque[minTail - 1]] >= currentLow) minTail--;
+                    minDeque[minTail++] = right;
+
+                    long windowStart = currentTs - windowUs;
+                    while (left < right && timestamps[left] < windowStart) {
+                        if (maxHead < maxTail && maxDeque[maxHead] == left) maxHead++;
+                        if (minHead < minTail && minDeque[minHead] == left) minHead++;
+                        left++;
+                    }
+
+                    if (right > 0) {
+                        erSum += absChanges[right];
+                        if (right > ER_LOOKBACK) {
+                            erSum -= absChanges[right - ER_LOOKBACK];
+                        }
+                    }
+
+                    if (right < warmup) continue;
+
+                    double er = -1;
+                    if (right >= ER_LOOKBACK && erSum > 0) {
+                        double netChange = Math.abs(closes[right] - closes[right - ER_LOOKBACK]);
+                        er = netChange / erSum;
+                    }
+                    boolean isRanging = er >= 0 && er < ER_RANGING;
+                    boolean isTrending = er > ER_TRENDING;
+
+                    if (isTrending) { skippedTrending++; continue; }
+                    if (!isRanging || right - left < 60 || maxHead >= maxTail || minHead >= minTail) continue;
+
+                    long epochSecond = timestamps[right] / (isMicro ? 1000000L : 1000L);
+                    int hour = java.time.Instant.ofEpochSecond(epochSecond)
+                            .atZone(ZoneId.systemDefault()).getHour();
+                    boolean allowedHour = hour == 0 || hour == 1 || hour == 6 || hour == 7
+                            || hour == 12 || hour == 13 || hour == 15
+                            || hour == 19 || hour == 22 || hour == 23;
+                    if (!allowedHour) { skippedByHour++; continue; }
+
+                    int maxIdx = maxDeque[maxHead];
+                    int minIdx = minDeque[minHead];
+                    double windowMax = highs[maxIdx];
+                    double windowMin = lows[minIdx];
+
+                    boolean isHighExtreme = currentHigh >= windowMax;
+                    boolean isLowExtreme = currentLow <= windowMin;
+
+                    if (!isHighExtreme && !isLowExtreme) continue;
+
+                    if (isHighExtreme && Math.abs(windowMax - lastMaxPrice) < 1e-8) {
+                        skippedDuplicate++; continue;
+                    }
+                    if (isLowExtreme && Math.abs(windowMin - lastMinPrice) < 1e-8) {
+                        skippedDuplicate++; continue;
+                    }
+                    if (isHighExtreme) lastMaxPrice = windowMax;
+                    if (isLowExtreme) lastMinPrice = windowMin;
+
+                    long settleTs = currentTs + settleUs;
+                    int settleIdx = java.util.Arrays.binarySearch(
+                            timestamps, right, Math.min(N - 1, right + settleSearchRange), settleTs);
+                    if (settleIdx < 0) settleIdx = -settleIdx - 1;
+                    if (settleIdx >= N) continue;
+                    double settlePrice = closes[settleIdx];
+
+                    boolean isWin;
+                    if (isHighExtreme) {
+                        isWin = currentClose > settlePrice;
+                        shortTrades++;
+                        if (isWin) shortWins++;
+                    } else {
+                        isWin = settlePrice > currentClose;
+                        longTrades++;
+                        if (isWin) longWins++;
+                    }
+
+                    totalTrades++;
+                    totalProfit += isWin ? winReturn : -1.0;
+                    if (isWin) {
+                        wins++;
+                        consecutiveLose = 0;
+                    } else {
+                        consecutiveLose++;
+                        if (consecutiveLose > maxConsecutiveLose) maxConsecutiveLose = consecutiveLose;
+                    }
+                }
+
+                long wElapsed = System.currentTimeMillis() - wStart;
+                double winRate = totalTrades > 0 ? wins * 100.0 / totalTrades : 0;
+                double shortWinRate = shortTrades > 0 ? shortWins * 100.0 / shortTrades : 0;
+                double longWinRate = longTrades > 0 ? longWins * 100.0 / longTrades : 0;
+
+                gridResults.add(new String[]{
+                        String.valueOf(winMin),
+                        settleName,
+                        String.format("%.0f%%", winReturn * 100),
+                        String.valueOf(totalTrades),
+                        String.valueOf(wins),
+                        String.valueOf(totalTrades - wins),
+                        String.format("%.2f", winRate),
+                        String.valueOf(shortTrades),
+                        String.format("%.2f", shortWinRate),
+                        String.valueOf(longTrades),
+                        String.format("%.2f", longWinRate),
+                        String.format("%+.2f", totalProfit),
+                        String.format("%.2f", beRate),
+                        String.valueOf(maxConsecutiveLose),
+                        String.valueOf(skippedTrending),
+                        String.valueOf(skippedByHour),
+                        String.valueOf(skippedDuplicate),
+                        formatTime(wElapsed)
+                });
+
+                System.out.println(String.format("  [%d/%d] %s结算 | %d分极值窗口 | 交易:%d | 胜率:%.2f%% | 盈亏:%+.1fU | 耗时:%s",
+                        comboIdx, totalCombos, settleName, winMin, totalTrades, winRate, totalProfit, formatTime(wElapsed)));
+            }
+        }
+
+        // ========== 3. 输出 CSV ==========
+        long t1 = System.currentTimeMillis();
+        String csvPath = "D:\\full_grid_search.csv";
+        try (java.io.PrintWriter pw = new java.io.PrintWriter(
+                new java.io.OutputStreamWriter(new java.io.FileOutputStream(csvPath), "UTF-8"))) {
+            for (String[] row : gridResults) {
+                pw.println(String.join(",", row));
+            }
+        }
+
+        System.out.println("\n[3/3] 全网格搜索完成");
+        System.out.println("═══════════════════════════════════════════════════════════");
+        System.out.println("  总组合数:       " + totalCombos);
+        System.out.println("  总耗时:         " + formatTime(t1 - t0));
+        System.out.println("  结果已保存:     " + csvPath);
+        System.out.println("═══════════════════════════════════════════════════════════");
+    }
+
+    /**
+     * 推荐三方案详细回测，输出精确的开单时间/判定条件/结果
+     *
+     * 方案A: 10分钟结算 + 25分钟极值 + 胜+80% 亏-100%
+     * 方案B: 30分钟结算 + 40分钟极值 + 胜+85% 亏-100%
+     * 方案C: 1小时结算 + 40分钟极值 + 胜+85% 亏-100%
+     *
+     * 固定: ER 5分钟判市(震荡<0.20), 时段过滤, 同一极值只开一单
+     */
+    @Test
+    public void testRecommendedStrategies() throws IOException {
+        System.out.println("╔══════════════════════════════════════════════════════════════╗");
+        System.out.println("║     推荐三方案详细回测                                       ║");
+        System.out.println("║     A: 10分结算+25分极值(80%)                                ║");
+        System.out.println("║     B: 30分结算+40分极值(85%)                                ║");
+        System.out.println("║     C: 1H结算+40分极值(85%)                                  ║");
+        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+        System.out.println();
+
+        long t0 = System.currentTimeMillis();
+
+        // ========== 1. 加载全量数据 ==========
+        System.out.println("[1/3] 加载全量数据...");
+        List<EthKlineSecond> sample = ethKlineSecondMapper.selectRecent(1);
+        if (sample.isEmpty()) { System.out.println("数据库无数据"); return; }
+        boolean isMicro = sample.get(0).getTimestamp() > 1000000000000000L;
+
+        List<EthKlineSecond> allData = ethKlineSecondMapper.selectByTimeRange(0L, Long.MAX_VALUE);
+        if (allData.isEmpty()) { System.out.println("数据库无数据"); return; }
+
+        Collections.sort(allData, Comparator.comparingLong(EthKlineSecond::getTimestamp));
+        int N = allData.size();
+        System.out.println("  加载完成: " + formatNumber(N) + " 条");
+
+        // 预计算原始数组
+        System.out.println("  预计算原始数组...");
+        long[] timestamps = new long[N];
+        double[] closes = new double[N];
+        double[] highs = new double[N];
+        double[] lows = new double[N];
+
+        for (int i = 0; i < N; i++) {
+            EthKlineSecond d = allData.get(i);
+            timestamps[i] = d.getTimestamp();
+            closes[i] = parseDouble(d.getClose());
+            highs[i] = parseDouble(d.getHigh());
+            lows[i] = parseDouble(d.getLow());
+        }
+
+        double[] absChanges = new double[N];
+        absChanges[0] = 0;
+        for (int i = 1; i < N; i++) {
+            absChanges[i] = Math.abs(closes[i] - closes[i - 1]);
+        }
+
+        allData = null;
+        System.gc();
+
+        // 三种方案定义: {名称, 极值窗口(分), 结算分钟, 胜利收益}
+        String[][] plans = {
+                {"方案A_10分结算_25分极值", "25", "10", "0.80"},
+                {"方案B_30分结算_40分极值", "40", "30", "0.85"},
+                {"方案C_1小时结算_40分极值", "40", "60", "0.85"},
+        };
+
+        System.out.println("\n[2/3] 执行三方案回测...");
+
+        for (String[] plan : plans) {
+            String planName = plan[0];
+            int winMin = Integer.parseInt(plan[1]);
+            int settleMinutes = Integer.parseInt(plan[2]);
+            double winReturn = Double.parseDouble(plan[3]);
+            long settleUs = settleMinutes * 60L * (isMicro ? 1000000L : 1000L);
+            long windowUs = winMin * 60L * (isMicro ? 1000000L : 1000L);
+            int warmup = Math.max(ER_LOOKBACK, Math.max(winMin * 60, settleMinutes * 60));
+            int settleSearchRange = Math.min(N - 1, settleMinutes * 60 + 1200);
+
+            // 单调队列
+            int[] maxDeque = new int[N];
+            int[] minDeque = new int[N];
+            int maxHead = 0, maxTail = 0, minHead = 0, minTail = 0;
+            int left = 0;
+            double erSum = 0;
+
+            int totalTrades = 0, wins = 0;
+            int skippedTrending = 0, skippedDuplicate = 0, skippedByHour = 0;
+            int consecutiveLose = 0, maxConsecutiveLose = 0;
+            double totalProfit = 0;
+            double lastMaxPrice = -1, lastMinPrice = -1;
+
+            List<TradeRecord> records = new ArrayList<>();
+
+            System.out.println("  " + planName + " ...");
+
+            for (int right = 0; right < N; right++) {
+                long currentTs = timestamps[right];
+                double currentHigh = highs[right];
+                double currentLow = lows[right];
+                double currentClose = closes[right];
+
+                while (maxHead < maxTail && highs[maxDeque[maxTail - 1]] <= currentHigh) maxTail--;
+                maxDeque[maxTail++] = right;
+                while (minHead < minTail && lows[minDeque[minTail - 1]] >= currentLow) minTail--;
+                minDeque[minTail++] = right;
+
+                long windowStart = currentTs - windowUs;
+                while (left < right && timestamps[left] < windowStart) {
+                    if (maxHead < maxTail && maxDeque[maxHead] == left) maxHead++;
+                    if (minHead < minTail && minDeque[minHead] == left) minHead++;
+                    left++;
+                }
+
+                if (right > 0) {
+                    erSum += absChanges[right];
+                    if (right > ER_LOOKBACK) erSum -= absChanges[right - ER_LOOKBACK];
+                }
+
+                if (right < warmup) continue;
+
+                double er = -1;
+                if (right >= ER_LOOKBACK && erSum > 0) {
+                    double netChange = Math.abs(closes[right] - closes[right - ER_LOOKBACK]);
+                    er = netChange / erSum;
+                }
+                boolean isRanging = er >= 0 && er < ER_RANGING;
+                boolean isTrending = er > ER_TRENDING;
+
+                if (isTrending) { skippedTrending++; continue; }
+                if (!isRanging || right - left < 60 || maxHead >= maxTail || minHead >= minTail) continue;
+
+                long epochSecond = timestamps[right] / (isMicro ? 1000000L : 1000L);
+                int hour = java.time.Instant.ofEpochSecond(epochSecond)
+                        .atZone(ZoneId.systemDefault()).getHour();
+                boolean allowedHour = hour == 0 || hour == 1 || hour == 6 || hour == 7
+                        || hour == 12 || hour == 13 || hour == 15
+                        || hour == 19 || hour == 22 || hour == 23;
+                if (!allowedHour) { skippedByHour++; continue; }
+
+                int maxIdx = maxDeque[maxHead];
+                int minIdx = minDeque[minHead];
+                double windowMax = highs[maxIdx];
+                double windowMin = lows[minIdx];
+
+                boolean isHighExtreme = currentHigh >= windowMax;
+                boolean isLowExtreme = currentLow <= windowMin;
+                if (!isHighExtreme && !isLowExtreme) continue;
+
+                if (isHighExtreme && Math.abs(windowMax - lastMaxPrice) < 1e-8) {
+                    skippedDuplicate++; continue;
+                }
+                if (isLowExtreme && Math.abs(windowMin - lastMinPrice) < 1e-8) {
+                    skippedDuplicate++; continue;
+                }
+                if (isHighExtreme) lastMaxPrice = windowMax;
+                if (isLowExtreme) lastMinPrice = windowMin;
+
+                long settleTs = currentTs + settleUs;
+                int settleIdx = java.util.Arrays.binarySearch(
+                        timestamps, right, Math.min(N - 1, right + settleSearchRange), settleTs);
+                if (settleIdx < 0) settleIdx = -settleIdx - 1;
+                if (settleIdx >= N) continue;
+                double settlePrice = closes[settleIdx];
+
+                TradeRecord rec = new TradeRecord();
+                rec.setOpenTimestamp(currentTs);
+                rec.setOpenTime(formatTimestamp(currentTs));
+                rec.setOpenPrice(currentClose);
+                rec.setHigh20min(windowMax);
+                rec.setHigh20minTime(formatTimestamp(timestamps[maxIdx]));
+                rec.setLow20min(windowMin);
+                rec.setLow20minTime(formatTimestamp(timestamps[minIdx]));
+                rec.setTenMinuteLaterPrice(settlePrice);
+                rec.setTenMinuteLaterTime(formatTimestamp(settleTs));
+
+                boolean isWin;
+                double rawProfit;
+                if (isHighExtreme) {
+                    rec.setDirection("空单");
+                    rec.setTriggerExtreme("最高价 " + String.format("%.4f", windowMax));
+                    rec.setTriggerExtremeTime(formatTimestamp(timestamps[maxIdx]));
+                    rawProfit = currentClose - settlePrice;
+                    isWin = rawProfit > 0;
+                } else {
+                    rec.setDirection("多单");
+                    rec.setTriggerExtreme("最低价 " + String.format("%.4f", windowMin));
+                    rec.setTriggerExtremeTime(formatTimestamp(timestamps[minIdx]));
+                    rawProfit = settlePrice - currentClose;
+                    isWin = rawProfit > 0;
+                }
+
+                rec.setProfit(isWin ? winReturn : -1.0);
+                rec.setProfitPercent((rawProfit / currentClose) * 100);
+                rec.setWin(isWin);
+
+                records.add(rec);
+                totalTrades++;
+                totalProfit += rec.getProfit();
+                if (isWin) {
+                    wins++;
+                    consecutiveLose = 0;
+                } else {
+                    consecutiveLose++;
+                    if (consecutiveLose > maxConsecutiveLose) maxConsecutiveLose = consecutiveLose;
+                }
+            }
+
+            double winRate = totalTrades > 0 ? wins * 100.0 / totalTrades : 0;
+            double beRate = 1.0 / (1.0 + winReturn) * 100;
+
+            System.out.println("    交易:" + totalTrades + " 胜率:" + String.format("%.2f%%", winRate)
+                    + " 盈亏:" + String.format("%+.2fU", totalProfit)
+                    + " 最大连亏:" + maxConsecutiveLose
+                    + " 单边跳过:" + skippedTrending
+                    + " 时段跳过:" + skippedByHour
+                    + " 重复跳过:" + skippedDuplicate);
+
+            // 保存到 Excel
+            String outputPath = "D:\\" + planName + ".xlsx";
+            saveToExcelWithSettle(records, outputPath, planName, settleMinutes, winReturn, beRate,
+                    totalTrades, wins, winRate, totalProfit, maxConsecutiveLose);
+            System.out.println("    → 已保存: " + outputPath);
+        }
+
+        long t1 = System.currentTimeMillis();
+        System.out.println("\n[3/3] 三方案回测完成");
+        System.out.println("═══════════════════════════════════════════════════════════");
+        System.out.println("  总耗时:         " + formatTime(t1 - t0));
+        System.out.println("═══════════════════════════════════════════════════════════");
+    }
+
+    /**
+     * 带结算时间信息的Excel导出
+     */
+    private void saveToExcelWithSettle(List<TradeRecord> records, String path, String sheetName,
+            int settleMinutes, double winReturn, double beRate,
+            int totalTrades, int wins, double winRate, double totalProfit, int maxConsecutiveLose)
+            throws IOException {
+        SXSSFWorkbook workbook = new SXSSFWorkbook(100);
+        SXSSFSheet sheet = workbook.createSheet(sheetName);
+        sheet.trackAllColumnsForAutoSizing();
+
+        String[] headers = {"开单时间", "方向", "开单价", "极值窗口最高价", "最高价出现时间",
+                "极值窗口最低价", "最低价出现时间", "触发极值", "极值出现时间",
+                "结算时间", "结算价", "价格变动%", "盈亏U", "结果"};
+
+        CellStyle headerStyle = workbook.createCellStyle();
+        Font headerFont = workbook.createFont();
+        headerFont.setBold(true);
+        headerStyle.setFont(headerFont);
+
+        CellStyle winStyle = workbook.createCellStyle();
+        winStyle.setFillForegroundColor(IndexedColors.LIGHT_GREEN.getIndex());
+        winStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
+        CellStyle loseStyle = workbook.createCellStyle();
+        loseStyle.setFillForegroundColor(IndexedColors.ROSE.getIndex());
+        loseStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
+        // 表头行
+        Row headerRow = sheet.createRow(0);
+        for (int i = 0; i < headers.length; i++) {
+            Cell cell = headerRow.createCell(i);
+            cell.setCellValue(headers[i]);
+            cell.setCellStyle(headerStyle);
+        }
+
+        int rowIdx = 1;
+        for (TradeRecord r : records) {
+            Row row = sheet.createRow(rowIdx++);
+            row.createCell(0).setCellValue(r.getOpenTime());
+            row.createCell(1).setCellValue(r.getDirection());
+            row.createCell(2).setCellValue(r.getOpenPrice());
+            row.createCell(3).setCellValue(r.getHigh20min());
+            row.createCell(4).setCellValue(r.getHigh20minTime() != null ? r.getHigh20minTime() : "");
+            row.createCell(5).setCellValue(r.getLow20min());
+            row.createCell(6).setCellValue(r.getLow20minTime() != null ? r.getLow20minTime() : "");
+            row.createCell(7).setCellValue(r.getTriggerExtreme() != null ? r.getTriggerExtreme() : "");
+            row.createCell(8).setCellValue(r.getTriggerExtremeTime() != null ? r.getTriggerExtremeTime() : "");
+            row.createCell(9).setCellValue(r.getTenMinuteLaterTime() != null ? r.getTenMinuteLaterTime() : "");
+            row.createCell(10).setCellValue(r.getTenMinuteLaterPrice());
+            row.createCell(11).setCellValue(r.getProfitPercent());
+            row.createCell(12).setCellValue(r.getProfit());
+            row.createCell(13).setCellValue(r.isWin() ? "胜利" : "亏损");
+
+            // 颜色标注
+            CellStyle style = r.isWin() ? winStyle : loseStyle;
+            for (int c = 0; c < headers.length; c++) {
+                row.getCell(c).setCellStyle(style);
+            }
+        }
+
+        // 汇总信息行（隔3行）
+        int summaryRow = rowIdx + 3;
+        CellStyle summaryStyle = workbook.createCellStyle();
+        Font summaryFont = workbook.createFont();
+        summaryFont.setBold(true);
+        summaryStyle.setFont(summaryFont);
+
+        Row r1 = sheet.createRow(summaryRow);
+        createCell(r1, 0, "═══ 回测参数 ═══", summaryStyle);
+        Row r2 = sheet.createRow(summaryRow + 1);
+        createCell(r2, 0, "极值窗口: " + (records.isEmpty() ? "-" : "见文件名") + "分钟", summaryStyle);
+        createCell(r2, 1, "结算时间: " + settleMinutes + "分钟", summaryStyle);
+        createCell(r2, 2, "胜利收益: +" + String.format("%.0f%%", winReturn * 100), summaryStyle);
+        createCell(r2, 3, "失败亏损: -100%", summaryStyle);
+        createCell(r2, 4, "盈亏平衡胜率: " + String.format("%.2f%%", beRate), summaryStyle);
+
+        Row r3 = sheet.createRow(summaryRow + 3);
+        createCell(r3, 0, "═══ 回测结果 ═══", summaryStyle);
+        Row r4 = sheet.createRow(summaryRow + 4);
+        createCell(r4, 0, "总交易: " + totalTrades, summaryStyle);
+        createCell(r4, 1, "胜利: " + wins, summaryStyle);
+        createCell(r4, 2, "亏损: " + (totalTrades - wins), summaryStyle);
+        createCell(r4, 3, "胜率: " + String.format("%.2f%%", winRate), summaryStyle);
+        createCell(r4, 4, "总盈亏: " + String.format("%+.2fU", totalProfit), summaryStyle);
+        createCell(r4, 5, "最大连亏: " + maxConsecutiveLose, summaryStyle);
+
+        for (int i = 0; i < headers.length; i++) {
+            sheet.autoSizeColumn(i);
+        }
+
+        try (FileOutputStream fos = new FileOutputStream(path)) {
+            workbook.write(fos);
+        }
+        workbook.close();
+        workbook.dispose();
+    }
+
+    @Test
+    public void testBounceConfirmStrategy() throws IOException {
+        System.out.println("╔══════════════════════════════════════════════════════════╗");
+        System.out.println("║        回踩确认策略 — 回测                               ║");
+        System.out.println("║  核心逻辑: 极值出现后，等价格反弹0.01%~0.10%再开单       ║");
+        System.out.println("║  结算规则: 10分→+4/-5, 30分/1H/1D→+4.25/-5               ║");
+        System.out.println("╚══════════════════════════════════════════════════════════╝");
+        System.out.println();
+
+        long t0 = System.currentTimeMillis();
+
+        System.out.println("[1/3] 加载全量数据...");
+        List<EthKlineSecond> sample = ethKlineSecondMapper.selectRecent(1);
+        if (sample.isEmpty()) { System.out.println("数据库无数据"); return; }
+        boolean isMicro = sample.get(0).getTimestamp() > 1000000000000000L;
+
+        List<EthKlineSecond> allData = ethKlineSecondMapper.selectByTimeRange(0L, Long.MAX_VALUE);
+        if (allData.isEmpty()) { System.out.println("数据库无数据"); return; }
+
+        Collections.sort(allData, Comparator.comparingLong(EthKlineSecond::getTimestamp));
+        int N = allData.size();
+        System.out.println("  加载完成: " + formatNumber(N) + " 条");
+
+        System.out.println("  预计算原始数组...");
+        long[] timestamps = new long[N];
+        double[] closes = new double[N];
+        double[] highs = new double[N];
+        double[] lows = new double[N];
+
+        for (int i = 0; i < N; i++) {
+            EthKlineSecond d = allData.get(i);
+            timestamps[i] = d.getTimestamp();
+            closes[i] = parseDouble(d.getClose());
+            highs[i] = parseDouble(d.getHigh());
+            lows[i] = parseDouble(d.getLow());
+        }
+
+        double[] absChanges = new double[N];
+        absChanges[0] = 0;
+        for (int i = 1; i < N; i++) {
+            absChanges[i] = Math.abs(closes[i] - closes[i - 1]);
+        }
+
+        allData = null;
+        System.gc();
+
+        double[] bounceThresholds = {0.0001, 0.0002, 0.0003, 0.0005, 0.0007, 0.0010};
+        int bounceWindowSec = 120;
+
+        String[][] plans = {
+                {"方案A_10分结算_25分极值", "25", "10", "4.0", "-5.0"},
+                {"方案B_30分结算_40分极值", "40", "30", "4.25", "-5.0"},
+                {"方案C_1H结算_40分极值",   "40", "60", "4.25", "-5.0"},
+        };
+
+        System.out.println("\n[2/3] 网格搜索回踩确认...");
+        System.out.println("  回踩阈值: " + java.util.Arrays.toString(bounceThresholds));
+        System.out.println("  确认窗口: " + bounceWindowSec + "秒");
+        System.out.println();
+
+        StringBuilder summaryCsv = new StringBuilder();
+        summaryCsv.append("方案,回踩阈值%,结算分钟,极值窗口,交易数,胜率%,总盈亏U,单笔盈亏U,跳过无回踩,跳过突破,跳过超时,跳过时段,跳过重复,跳过趋势,最大连亏\n");
+
+        for (String[] plan : plans) {
+            String planName = plan[0];
+            int winMin = Integer.parseInt(plan[1]);
+            int settleMinutes = Integer.parseInt(plan[2]);
+            double winReturn = Double.parseDouble(plan[3]);
+            double loseReturn = Double.parseDouble(plan[4]);
+            long settleUs = settleMinutes * 60L * (isMicro ? 1000000L : 1000L);
+            long windowUs = winMin * 60L * (isMicro ? 1000000L : 1000L);
+            int warmup = Math.max(ER_LOOKBACK, Math.max(winMin * 60, settleMinutes * 60));
+            int settleSearchRange = Math.min(N - 1, settleMinutes * 60 + 1200);
+            long bounceWindowUs = bounceWindowSec * (isMicro ? 1000000L : 1000L);
+
+            System.out.println("  ====== " + planName + " (胜+" + winReturn + " / 亏" + loseReturn + ") ======");
+            System.out.printf("  %-10s %8s %8s %8s %10s %10s %8s %8s %8s\n",
+                    "回踩阈值", "交易数", "胜率%", "总盈亏", "单笔盈亏", "无回踩", "突破取消", "超时", "最大连亏");
+
+            for (double bounceThreshold : bounceThresholds) {
+                int[] maxDeque = new int[N];
+                int[] minDeque = new int[N];
+                int maxHead = 0, maxTail = 0, minHead = 0, minTail = 0;
+                int left = 0;
+                double erSum = 0;
+
+                int totalTrades = 0, wins = 0;
+                int skippedTrending = 0, skippedDuplicate = 0, skippedByHour = 0;
+                int skippedNoBounce = 0, skippedBreakout = 0, skippedTimeout = 0;
+                int consecutiveLose = 0, maxConsecutiveLose = 0;
+                double totalProfit = 0;
+                double lastMaxPrice = -1, lastMinPrice = -1;
+
+                List<TradeRecord> records = new ArrayList<>();
+
+                for (int right = 0; right < N; right++) {
+                    long currentTs = timestamps[right];
+                    double currentHigh = highs[right];
+                    double currentLow = lows[right];
+                    double currentClose = closes[right];
+
+                    while (maxHead < maxTail && highs[maxDeque[maxTail - 1]] <= currentHigh) maxTail--;
+                    maxDeque[maxTail++] = right;
+                    while (minHead < minTail && lows[minDeque[minTail - 1]] >= currentLow) minTail--;
+                    minDeque[minTail++] = right;
+
+                    long windowStart = currentTs - windowUs;
+                    while (left < right && timestamps[left] < windowStart) {
+                        if (maxHead < maxTail && maxDeque[maxHead] == left) maxHead++;
+                        if (minHead < minTail && minDeque[minHead] == left) minHead++;
+                        left++;
+                    }
+
+                    if (right > 0) {
+                        erSum += absChanges[right];
+                        if (right > ER_LOOKBACK) erSum -= absChanges[right - ER_LOOKBACK];
+                    }
+
+                    if (right < warmup) continue;
+
+                    double er = -1;
+                    if (right >= ER_LOOKBACK && erSum > 0) {
+                        double netChange = Math.abs(closes[right] - closes[right - ER_LOOKBACK]);
+                        er = netChange / erSum;
+                    }
+                    boolean isRanging = er >= 0 && er < ER_RANGING;
+                    boolean isTrending = er > ER_TRENDING;
+
+                    if (isTrending) { skippedTrending++; continue; }
+                    if (!isRanging || right - left < 60 || maxHead >= maxTail || minHead >= minTail) continue;
+
+                    long epochSecond = timestamps[right] / (isMicro ? 1000000L : 1000L);
+                    int hour = java.time.Instant.ofEpochSecond(epochSecond)
+                            .atZone(ZoneId.systemDefault()).getHour();
+                    boolean allowedHour = hour == 0 || hour == 1 || hour == 6 || hour == 7
+                            || hour == 12 || hour == 13 || hour == 15
+                            || hour == 19 || hour == 22 || hour == 23;
+                    if (!allowedHour) { skippedByHour++; continue; }
+
+                    int maxIdx = maxDeque[maxHead];
+                    int minIdx = minDeque[minHead];
+                    double windowMax = highs[maxIdx];
+                    double windowMin = lows[minIdx];
+
+                    boolean isHighExtreme = currentHigh >= windowMax;
+                    boolean isLowExtreme = currentLow <= windowMin;
+                    if (!isHighExtreme && !isLowExtreme) continue;
+
+                    if (isHighExtreme && Math.abs(windowMax - lastMaxPrice) < 1e-8) {
+                        skippedDuplicate++; continue;
+                    }
+                    if (isLowExtreme && Math.abs(windowMin - lastMinPrice) < 1e-8) {
+                        skippedDuplicate++; continue;
+                    }
+                    if (isHighExtreme) lastMaxPrice = windowMax;
+                    if (isLowExtreme) lastMinPrice = windowMin;
+
+                    boolean bounced = false;
+                    boolean brokeOut = false;
+                    int bounceIdx = right;
+                    double bouncePrice = currentClose;
+
+                    for (int fwd = right + 1; fwd < N && (timestamps[fwd] - currentTs) <= bounceWindowUs; fwd++) {
+                        if (isHighExtreme) {
+                            if (closes[fwd] <= currentClose * (1 - bounceThreshold)) {
+                                bounced = true;
+                                bounceIdx = fwd;
+                                bouncePrice = closes[fwd];
+                                break;
+                            }
+                            if (closes[fwd] > currentClose * (1 + bounceThreshold)) {
+                                brokeOut = true;
+                                break;
+                            }
+                        } else {
+                            if (closes[fwd] >= currentClose * (1 + bounceThreshold)) {
+                                bounced = true;
+                                bounceIdx = fwd;
+                                bouncePrice = closes[fwd];
+                                break;
+                            }
+                            if (closes[fwd] < currentClose * (1 - bounceThreshold)) {
+                                brokeOut = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!bounced) {
+                        if (brokeOut) skippedBreakout++;
+                        else skippedNoBounce++;
+                        continue;
+                    }
+
+                    long settleTs = currentTs + settleUs;
+                    int settleIdx = java.util.Arrays.binarySearch(
+                            timestamps, bounceIdx, Math.min(N - 1, bounceIdx + settleSearchRange), settleTs);
+                    if (settleIdx < 0) settleIdx = -settleIdx - 1;
+                    if (settleIdx >= N) continue;
+                    double settlePrice = closes[settleIdx];
+
+                    TradeRecord rec = new TradeRecord();
+                    rec.setOpenTimestamp(currentTs);
+                    rec.setOpenTime(formatTimestamp(currentTs));
+                    rec.setOpenPrice(bouncePrice);
+                    rec.setHigh20min(windowMax);
+                    rec.setHigh20minTime(formatTimestamp(timestamps[maxIdx]));
+                    rec.setLow20min(windowMin);
+                    rec.setLow20minTime(formatTimestamp(timestamps[minIdx]));
+                    rec.setTenMinuteLaterPrice(settlePrice);
+                    rec.setTenMinuteLaterTime(formatTimestamp(settleTs));
+                    rec.setDelayedOpenTimestamp(timestamps[bounceIdx]);
+                    rec.setDelayedOpenPrice(bouncePrice);
+                    rec.setCoolingSeconds((int)((timestamps[bounceIdx] - currentTs) / (isMicro ? 1000000L : 1000L)));
+
+                    boolean isWin;
+                    double rawProfit;
+                    if (isHighExtreme) {
+                        rec.setDirection("空单");
+                        rec.setTriggerExtreme("最高价 " + String.format("%.4f", windowMax));
+                        rec.setTriggerExtremeTime(formatTimestamp(timestamps[maxIdx]));
+                        rawProfit = bouncePrice - settlePrice;
+                        isWin = rawProfit > 0;
+                    } else {
+                        rec.setDirection("多单");
+                        rec.setTriggerExtreme("最低价 " + String.format("%.4f", windowMin));
+                        rec.setTriggerExtremeTime(formatTimestamp(timestamps[minIdx]));
+                        rawProfit = settlePrice - bouncePrice;
+                        isWin = rawProfit > 0;
+                    }
+
+                    rec.setProfit(isWin ? winReturn : loseReturn);
+                    rec.setProfitPercent((rawProfit / bouncePrice) * 100);
+                    rec.setWin(isWin);
+
+                    records.add(rec);
+                    totalTrades++;
+                    totalProfit += rec.getProfit();
+                    if (isWin) {
+                        wins++;
+                        consecutiveLose = 0;
+                    } else {
+                        consecutiveLose++;
+                        if (consecutiveLose > maxConsecutiveLose) maxConsecutiveLose = consecutiveLose;
+                    }
+                }
+
+                double winRate = totalTrades > 0 ? wins * 100.0 / totalTrades : 0;
+                double avgPnl = totalTrades > 0 ? totalProfit / totalTrades : 0;
+                double beRate = 1.0 / (1.0 + winReturn / Math.abs(loseReturn)) * 100;
+
+                System.out.printf("  %-10s %8d %8.2f%% %+10.2f %+10.4f %8d %8d %8d %8d\n",
+                        String.format("%.2f%%", bounceThreshold * 100),
+                        totalTrades, winRate, totalProfit, avgPnl,
+                        skippedNoBounce, skippedBreakout, skippedTimeout, maxConsecutiveLose);
+
+                summaryCsv.append(String.format("%s,%.2f,%d,%d,%d,%.2f,%+.2f,%+.4f,%d,%d,%d,%d,%d,%d,%d\n",
+                        planName, bounceThreshold * 100, settleMinutes, winMin,
+                        totalTrades, winRate, totalProfit, avgPnl,
+                        skippedNoBounce, skippedBreakout, skippedTimeout,
+                        skippedByHour, skippedDuplicate, skippedTrending, maxConsecutiveLose));
+
+                if (!records.isEmpty() && bounceThreshold == 0.0003) {
+                    String outputPath = "D:\\回踩确认_" + planName + ".xlsx";
+                    saveToExcelWithSettle(records, outputPath, planName + "_回踩0.03%",
+                            settleMinutes, winReturn, beRate,
+                            totalTrades, wins, winRate, totalProfit, maxConsecutiveLose);
+                }
+            }
+            System.out.println();
+        }
+
+        String summaryPath = "D:\\回踩确认_网格搜索.csv";
+        java.nio.file.Files.write(java.nio.file.Paths.get(summaryPath),
+                summaryCsv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        System.out.println("[3/3] 汇总已保存: " + summaryPath);
+
+        long t1 = System.currentTimeMillis();
+        System.out.println("\n总耗时: " + formatTime(t1 - t0));
+    }
+
+    @Test
+    public void testFinalThreeStrategies() throws IOException {
+        System.out.println("╔══════════════════════════════════════════════════════════╗");
+        System.out.println("║        最终三方案 — 回踩确认回测                          ║");
+        System.out.println("╠══════════════════════════════════════════════════════════╣");
+        System.out.println("║  方案1: 10分结算 | 25分极值 | 0.05%回踩 | 胜+4.00 亏-5   ║");
+        System.out.println("║  方案2: 30分结算 | 40分极值 | 0.01%回踩 | 胜+4.25 亏-5   ║");
+        System.out.println("║  方案3: 1H 结算 | 40分极值 | 0.01%回踩 | 胜+4.25 亏-5   ║");
+        System.out.println("╚══════════════════════════════════════════════════════════╝");
+        System.out.println();
+
+        long t0 = System.currentTimeMillis();
+
+        System.out.println("[1/3] 加载全量数据...");
+        List<EthKlineSecond> sample = ethKlineSecondMapper.selectRecent(1);
+        if (sample.isEmpty()) { System.out.println("数据库无数据"); return; }
+        boolean isMicro = sample.get(0).getTimestamp() > 1000000000000000L;
+
+        List<EthKlineSecond> allData = ethKlineSecondMapper.selectByTimeRange(0L, Long.MAX_VALUE);
+        if (allData.isEmpty()) { System.out.println("数据库无数据"); return; }
+
+        Collections.sort(allData, Comparator.comparingLong(EthKlineSecond::getTimestamp));
+        int N = allData.size();
+        System.out.println("  加载完成: " + formatNumber(N) + " 条");
+
+        System.out.println("  预计算原始数组...");
+        long[] timestamps = new long[N];
+        double[] closes = new double[N];
+        double[] highs = new double[N];
+        double[] lows = new double[N];
+
+        for (int i = 0; i < N; i++) {
+            EthKlineSecond d = allData.get(i);
+            timestamps[i] = d.getTimestamp();
+            closes[i] = parseDouble(d.getClose());
+            highs[i] = parseDouble(d.getHigh());
+            lows[i] = parseDouble(d.getLow());
+        }
+
+        double[] absChanges = new double[N];
+        absChanges[0] = 0;
+        for (int i = 1; i < N; i++) {
+            absChanges[i] = Math.abs(closes[i] - closes[i - 1]);
+        }
+
+        allData = null;
+        System.gc();
+
+        int bounceWindowSec = 120;
+
+        String[][] plans = {
+                {"最终方案1_10分结算_25分极值_0.05回踩", "25", "10", "4.0", "-5.0", "0.0005"},
+                {"最终方案2_30分结算_40分极值_0.01回踩", "40", "30", "4.25", "-5.0", "0.0001"},
+                {"最终方案3_1H结算_40分极值_0.01回踩",   "40", "60", "4.25", "-5.0", "0.0001"},
+        };
+
+        System.out.println("\n[2/3] 执行三方案回测...");
+        System.out.println();
+
+        for (String[] plan : plans) {
+            String planName = plan[0];
+            int winMin = Integer.parseInt(plan[1]);
+            int settleMinutes = Integer.parseInt(plan[2]);
+            double winReturn = Double.parseDouble(plan[3]);
+            double loseReturn = Double.parseDouble(plan[4]);
+            double bounceThreshold = Double.parseDouble(plan[5]);
+            long settleUs = settleMinutes * 60L * (isMicro ? 1000000L : 1000L);
+            long windowUs = winMin * 60L * (isMicro ? 1000000L : 1000L);
+            int warmup = Math.max(ER_LOOKBACK, Math.max(winMin * 60, settleMinutes * 60));
+            int settleSearchRange = Math.min(N - 1, settleMinutes * 60 + 1200);
+            long bounceWindowUs = bounceWindowSec * (isMicro ? 1000000L : 1000L);
+
+            int[] maxDeque = new int[N];
+            int[] minDeque = new int[N];
+            int maxHead = 0, maxTail = 0, minHead = 0, minTail = 0;
+            int left = 0;
+            double erSum = 0;
+
+            int totalTrades = 0, wins = 0;
+            int skippedTrending = 0, skippedDuplicate = 0, skippedByHour = 0;
+            int skippedNoBounce = 0, skippedBreakout = 0;
+            int consecutiveLose = 0, maxConsecutiveLose = 0;
+            double totalProfit = 0;
+            double lastMaxPrice = -1, lastMinPrice = -1;
+
+            List<TradeRecord> records = new ArrayList<>();
+
+            System.out.println("  " + planName + " ...");
+
+            for (int right = 0; right < N; right++) {
+                long currentTs = timestamps[right];
+                double currentHigh = highs[right];
+                double currentLow = lows[right];
+                double currentClose = closes[right];
+
+                while (maxHead < maxTail && highs[maxDeque[maxTail - 1]] <= currentHigh) maxTail--;
+                maxDeque[maxTail++] = right;
+                while (minHead < minTail && lows[minDeque[minTail - 1]] >= currentLow) minTail--;
+                minDeque[minTail++] = right;
+
+                long windowStart = currentTs - windowUs;
+                while (left < right && timestamps[left] < windowStart) {
+                    if (maxHead < maxTail && maxDeque[maxHead] == left) maxHead++;
+                    if (minHead < minTail && minDeque[minHead] == left) minHead++;
+                    left++;
+                }
+
+                if (right > 0) {
+                    erSum += absChanges[right];
+                    if (right > ER_LOOKBACK) erSum -= absChanges[right - ER_LOOKBACK];
+                }
+
+                if (right < warmup) continue;
+
+                double er = -1;
+                if (right >= ER_LOOKBACK && erSum > 0) {
+                    double netChange = Math.abs(closes[right] - closes[right - ER_LOOKBACK]);
+                    er = netChange / erSum;
+                }
+                boolean isRanging = er >= 0 && er < ER_RANGING;
+                boolean isTrending = er > ER_TRENDING;
+
+                if (isTrending) { skippedTrending++; continue; }
+                if (!isRanging || right - left < 60 || maxHead >= maxTail || minHead >= minTail) continue;
+
+                long epochSecond = timestamps[right] / (isMicro ? 1000000L : 1000L);
+                int hour = java.time.Instant.ofEpochSecond(epochSecond)
+                        .atZone(ZoneId.systemDefault()).getHour();
+                boolean allowedHour = hour == 0 || hour == 1 || hour == 6 || hour == 7
+                        || hour == 12 || hour == 13 || hour == 15
+                        || hour == 19 || hour == 22 || hour == 23;
+                if (!allowedHour) { skippedByHour++; continue; }
+
+                int maxIdx = maxDeque[maxHead];
+                int minIdx = minDeque[minHead];
+                double windowMax = highs[maxIdx];
+                double windowMin = lows[minIdx];
+
+                boolean isHighExtreme = currentHigh >= windowMax;
+                boolean isLowExtreme = currentLow <= windowMin;
+                if (!isHighExtreme && !isLowExtreme) continue;
+
+                if (isHighExtreme && Math.abs(windowMax - lastMaxPrice) < 1e-8) {
+                    skippedDuplicate++; continue;
+                }
+                if (isLowExtreme && Math.abs(windowMin - lastMinPrice) < 1e-8) {
+                    skippedDuplicate++; continue;
+                }
+                if (isHighExtreme) lastMaxPrice = windowMax;
+                if (isLowExtreme) lastMinPrice = windowMin;
+
+                boolean bounced = false;
+                boolean brokeOut = false;
+                int bounceIdx = right;
+                double bouncePrice = currentClose;
+
+                for (int fwd = right + 1; fwd < N && (timestamps[fwd] - currentTs) <= bounceWindowUs; fwd++) {
+                    if (isHighExtreme) {
+                        if (closes[fwd] <= currentClose * (1 - bounceThreshold)) {
+                            bounced = true; bounceIdx = fwd; bouncePrice = closes[fwd]; break;
+                        }
+                        if (closes[fwd] > currentClose * (1 + bounceThreshold)) {
+                            brokeOut = true; break;
+                        }
+                    } else {
+                        if (closes[fwd] >= currentClose * (1 + bounceThreshold)) {
+                            bounced = true; bounceIdx = fwd; bouncePrice = closes[fwd]; break;
+                        }
+                        if (closes[fwd] < currentClose * (1 - bounceThreshold)) {
+                            brokeOut = true; break;
+                        }
+                    }
+                }
+
+                if (!bounced) {
+                    if (brokeOut) skippedBreakout++;
+                    else skippedNoBounce++;
+                    continue;
+                }
+
+                long settleTs = currentTs + settleUs;
+                int settleIdx = java.util.Arrays.binarySearch(
+                        timestamps, bounceIdx, Math.min(N - 1, bounceIdx + settleSearchRange), settleTs);
+                if (settleIdx < 0) settleIdx = -settleIdx - 1;
+                if (settleIdx >= N) continue;
+                double settlePrice = closes[settleIdx];
+
+                TradeRecord rec = new TradeRecord();
+                rec.setOpenTimestamp(currentTs);
+                rec.setOpenTime(formatTimestamp(currentTs));
+                rec.setOpenPrice(bouncePrice);
+                rec.setHigh20min(windowMax);
+                rec.setHigh20minTime(formatTimestamp(timestamps[maxIdx]));
+                rec.setLow20min(windowMin);
+                rec.setLow20minTime(formatTimestamp(timestamps[minIdx]));
+                rec.setTenMinuteLaterPrice(settlePrice);
+                rec.setTenMinuteLaterTime(formatTimestamp(settleTs));
+                rec.setDelayedOpenTimestamp(timestamps[bounceIdx]);
+                rec.setDelayedOpenPrice(bouncePrice);
+                rec.setCoolingSeconds((int)((timestamps[bounceIdx] - currentTs) / (isMicro ? 1000000L : 1000L)));
+
+                boolean isWin;
+                double rawProfit;
+                if (isHighExtreme) {
+                    rec.setDirection("空单");
+                    rec.setTriggerExtreme("最高价 " + String.format("%.4f", windowMax));
+                    rec.setTriggerExtremeTime(formatTimestamp(timestamps[maxIdx]));
+                    rawProfit = bouncePrice - settlePrice;
+                    isWin = rawProfit > 0;
+                } else {
+                    rec.setDirection("多单");
+                    rec.setTriggerExtreme("最低价 " + String.format("%.4f", windowMin));
+                    rec.setTriggerExtremeTime(formatTimestamp(timestamps[minIdx]));
+                    rawProfit = settlePrice - bouncePrice;
+                    isWin = rawProfit > 0;
+                }
+
+                rec.setProfit(isWin ? winReturn : loseReturn);
+                rec.setProfitPercent((rawProfit / bouncePrice) * 100);
+                rec.setWin(isWin);
+
+                records.add(rec);
+                totalTrades++;
+                totalProfit += rec.getProfit();
+                if (isWin) {
+                    wins++;
+                    consecutiveLose = 0;
+                } else {
+                    consecutiveLose++;
+                    if (consecutiveLose > maxConsecutiveLose) maxConsecutiveLose = consecutiveLose;
+                }
+            }
+
+            double winRate = totalTrades > 0 ? wins * 100.0 / totalTrades : 0;
+            double beRate = 1.0 / (1.0 + winReturn / Math.abs(loseReturn)) * 100;
+
+            System.out.println("    交易:" + totalTrades + " 胜率:" + String.format("%.2f%%", winRate)
+                    + " 盈亏:" + String.format("%+.2fU", totalProfit)
+                    + " 最大连亏:" + maxConsecutiveLose
+                    + " 突破取消:" + skippedBreakout
+                    + " 无回踩:" + skippedNoBounce);
+
+            String outputPath = "D:\\" + planName + ".xlsx";
+            saveToExcelWithSettle(records, outputPath, planName,
+                    settleMinutes, winReturn, beRate,
+                    totalTrades, wins, winRate, totalProfit, maxConsecutiveLose);
+            System.out.println("    → 已保存: " + outputPath);
+        }
+
+        long t1 = System.currentTimeMillis();
+        System.out.println("\n[3/3] 三方案回测完成");
+        System.out.println("总耗时: " + formatTime(t1 - t0));
+    }
+
+    private void createCell(Row row, int col, String value, CellStyle style) {
+        Cell cell = row.createCell(col);
+        cell.setCellValue(value);
+        cell.setCellStyle(style);
     }
 
 }
