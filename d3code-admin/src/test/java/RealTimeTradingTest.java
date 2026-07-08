@@ -30,18 +30,25 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * 实时交易测试 - WebSocket 连接币安，实时计算并下单
  *
- * 策略核心逻辑：
+ * 策略核心逻辑（v11/v12/v13 回踩确认策略）：
  * 1. 连接币安 WebSocket 获取 ETH/USDT 1秒 K线实时数据
- * 2. 维护过去 20 分钟的数据缓冲
- * 3. 在 20 分钟窗口内找到最高价/最低价
- * 4. 开单条件：当前时间比极值时间晚 1~3 分钟，且每分钟最多开一单
- * 5. 开单后存入数据库，10 分钟后自动结算
- * 6. 运行一整夜，第二天早上查看结果
+ * 2. 维护过去 4 小时的数据缓冲
+ * 3. ER效率比率判断市场状态：震荡市(ER<0.20)才开单，单边市(ER>0.65)不开单
+ * 4. 时段过滤：仅在北京时间高胜率时段(00-01,06-07,12-13,15,19,22-23)交易
+ * 5. 在指定窗口内找到最高价/最低价（极值）
+ * 6. 极值出现后，等待价格回踩确认（反弹阈值）再开单，突破则取消
+ * 7. 开单后存入数据库，到达结算时间后自动结算
+ * 8. 运行一整夜，第二天早上查看结果
+ *
+ * 当前版本配置：
+ * - v11: 25m极值窗口 / 10分钟结算 / 0.05%回踩阈值 / 胜利+4U / 失败-5U
+ * - v12: 40m极值窗口 / 30分钟结算 / 0.01%回踩阈值 / 胜利+4.25U / 失败-5U
+ * - v13: 40m极值窗口 /  1小时结算 / 0.01%回踩阈值 / 胜利+4.25U / 失败-5U
  *
  * 包含功能：
  * - testPersistence(): 持久化验证（CRUD测试）
  * - testReplayWithCooling(): 冷静期回放对比
- * - testRealTimeTrading(): 主入口 - 实时交易
+ * - testRealTimeTrading(): 主入口 - 实时交易（仅v11/v12/v13）
  * - testDownloadAndReplay(): 下载数据 + 策略回放
  * - testAnalyzeLosingTrades(): 亏损分析 v2
  * - testAnalyzeLosingTradesV3(): 亏损全维度分析 v3
@@ -88,6 +95,16 @@ public class RealTimeTradingTest {
     private static final long ONE_HOUR_US = 3_600_000_000L;        // 1小时
     private static final long TWO_HOURS_US = 7_200_000_000L;       // 2小时
     private static final long FOUR_HOURS_US = 14_400_000_000L;     // 4小时
+    private static final long BOUNCE_WINDOW_US = 120_000_000L;        // 回踩确认窗口(120秒)
+
+    // ==================== ER震荡判市常量 ====================
+    private static final int ER_LOOKBACK = 300;          // ER回顾窗口(秒)
+    private static final double ER_RANGING = 0.20;       // 震荡市阈值
+    private static final double ER_TRENDING = 0.65;      // 单边市阈值
+
+    // ==================== 高胜率时段(北京时间) ====================
+    private static final Set<Integer> ALLOWED_HOURS = new HashSet<>(Arrays.asList(
+            0, 1, 6, 7, 12, 13, 15, 19, 22, 23));
 
     // ==================== 方向常量 ====================
 
@@ -116,6 +133,12 @@ public class RealTimeTradingTest {
         final long settleUs;            // 结算等待时间（微秒）
         final long gapUs;               // 极值距当前允许的最小时差（微秒）
         final double trendThreshold;    // 趋势过滤阈值，0=无过滤
+    final double bounceThreshold;   // 回踩确认阈值，0=无回踩确认
+    final double winReturn;         // 胜利收益(U)
+    final double loseReturn;        // 亏损收益(U)
+    final boolean useBounceConfirm; // 是否启用回踩确认
+    final boolean useERFilter;      // 是否启用ER震荡判市
+    final boolean useHourFilter;    // 是否启用时段过滤
 
         final AtomicInteger totalTrades  = new AtomicInteger(0);
         final AtomicInteger longTrades   = new AtomicInteger(0);
@@ -127,15 +150,27 @@ public class RealTimeTradingTest {
         final AtomicInteger skippedByTrend = new AtomicInteger(0);
 
         StrategyVersion(String name, String label, long windowUs, long settleUs, long gapUs, double trendThreshold) {
+            this(name, label, windowUs, settleUs, gapUs, trendThreshold, 0, WIN_PROFIT_USD, LOSE_PROFIT_USD, false, false, false);
+        }
+
+        StrategyVersion(String name, String label, long windowUs, long settleUs, long gapUs,
+                        double trendThreshold, double bounceThreshold, double winReturn, double loseReturn,
+                        boolean useBounceConfirm, boolean useERFilter, boolean useHourFilter) {
             this.name = name;
             this.label = label;
             this.windowUs = windowUs;
             this.settleUs = settleUs;
             this.gapUs = gapUs;
             this.trendThreshold = trendThreshold;
+            this.bounceThreshold = bounceThreshold;
+            this.winReturn = winReturn;
+            this.loseReturn = loseReturn;
+            this.useBounceConfirm = useBounceConfirm;
+            this.useERFilter = useERFilter;
+            this.useHourFilter = useHourFilter;
         }
 
-        long calcProfit() { return RealTimeTradingTest.calcProfit(winCount.get(), loseCount.get(), timeoutCount.get()); }
+        long calcProfit() { return (long)(winCount.get() * winReturn + loseCount.get() * loseReturn + timeoutCount.get() * loseReturn); }
         double winRate() { int s = settledCount.get(); return s > 0 ? winCount.get() * 100.0 / s : 0; }
     }
 
@@ -166,17 +201,27 @@ public class RealTimeTradingTest {
         winStates.putIfAbsent(windowUs, new WindowState());
     }
 
+    private void registerVersion(String name, String label, long windowUs, long settleUs, long gapUs,
+                                 double trendThreshold, double bounceThreshold, double winReturn, double loseReturn,
+                                 boolean useBounceConfirm, boolean useERFilter, boolean useHourFilter) {
+        StrategyVersion v = new StrategyVersion(name, label, windowUs, settleUs, gapUs,
+                trendThreshold, bounceThreshold, winReturn, loseReturn,
+                useBounceConfirm, useERFilter, useHourFilter);
+        versions.add(v);
+        verByName.put(name, v);
+        winStates.putIfAbsent(windowUs, new WindowState());
+    }
+
     /**
-     * 初始化所有策略版本
+     * 初始化策略版本（仅 v11/v12/v13 回踩确认策略）
+     * v11: 25m极值/10m结算/0.05%回踩 → +4U/-5U
+     * v12: 40m极值/30m结算/0.01%回踩 → +4.25U/-5U
+     * v13: 40m极值/1h结算/0.01%回踩 → +4.25U/-5U
      */
     private void initVersions() {
-        registerVersion("base", "base(20m/10m)",      TWENTY_MINUTES_US, TEN_MINUTES_US,    THREE_MINUTES_US, 0);
-        registerVersion("v1",   "v1(20m/10m 0.2%)",   TWENTY_MINUTES_US, TEN_MINUTES_US,    THREE_MINUTES_US, 0.002);
-        registerVersion("v2",   "v2(20m/10m 0.5%)",   TWENTY_MINUTES_US, TEN_MINUTES_US,    THREE_MINUTES_US, 0.005);
-        registerVersion("v5",   "v5(20m/30m)",        TWENTY_MINUTES_US, THIRTY_MINUTES_US, THREE_MINUTES_US, 0);
-        registerVersion("v3",   "v3(15m/10m)",        FIFTEEN_MINUTES_US, TEN_MINUTES_US,    ONE_MINUTE_US,    0);
-        registerVersion("v4",   "v4(30m/10m)",        THIRTY_MINUTES_US, TEN_MINUTES_US,     ONE_MINUTE_US,    0);
-        registerVersion("v6",   "v6(2h/1h)",          TWO_HOURS_US, ONE_HOUR_US,             ONE_MINUTE_US,    0);
+        registerVersion("v11",  "v11(25m/10m/0.05%)", 25 * ONE_MINUTE_US, TEN_MINUTES_US,    0, 0, 0.0005, 4.0,  -5.0, true, true, true);
+        registerVersion("v12",  "v12(40m/30m/0.01%)", 40 * ONE_MINUTE_US, THIRTY_MINUTES_US, 0, 0, 0.0001, 4.25, -5.0, true, true, true);
+        registerVersion("v13",  "v13(40m/1h/0.01%)",  40 * ONE_MINUTE_US, ONE_HOUR_US,       0, 0, 0.0001, 4.25, -5.0, true, true, true);
     }
 
     // ==================== 全局汇总（动态计算所有版本合计） ====================
@@ -200,6 +245,24 @@ public class RealTimeTradingTest {
     /** 待结算交易映射表（dbId -> PendingTrade）*/
     private final ConcurrentHashMap<Long, PendingTrade> pendingTrades = new ConcurrentHashMap<>();
 
+    // ==================== ER计算与回踩确认 ====================
+    private double erSum = 0;
+    private int erCount = 0;
+    private final double[] erRing = new double[ER_LOOKBACK];
+    private int erRingIdx = 0;
+    private boolean erRingFull = false;
+    private double prevClose = -1;
+
+    private static class BouncePending {
+        long extremeTs;
+        double extremePrice;
+        boolean isHighExtreme;
+        KlineData maxData;
+        KlineData minData;
+        StrategyVersion ver;
+    }
+    private final ConcurrentHashMap<Long, BouncePending> bouncePending = new ConcurrentHashMap<>();
+
     // ==================== 策略诊断状态 ====================
 
     private final AtomicInteger klineReceived = new AtomicInteger(0);
@@ -209,6 +272,11 @@ public class RealTimeTradingTest {
     private final AtomicInteger rejectLongGap = new AtomicInteger(0);
     private final AtomicInteger rejectDedup = new AtomicInteger(0);
     private final AtomicInteger rejectCooling = new AtomicInteger(0);
+    private final AtomicInteger rejectNoBounce = new AtomicInteger(0);
+    private final AtomicInteger rejectBreakout = new AtomicInteger(0);
+    private final AtomicInteger rejectTrending = new AtomicInteger(0);
+    private final AtomicInteger rejectNotRanging = new AtomicInteger(0);
+    private final AtomicInteger rejectHourFilter = new AtomicInteger(0);
     private volatile String lastDiag = "";
     private volatile String lastDetailDiag = "";
     private final AtomicInteger klineParseError = new AtomicInteger(0);
@@ -394,7 +462,10 @@ public class RealTimeTradingTest {
                         boolean isWin = isShort
                                 ? settlePrice < openPrice
                                 : settlePrice > openPrice;
-                        double profit = isWin ? WIN_PROFIT_USD : LOSE_PROFIT_USD;
+                        StrategyVersion stv = verByName.get(r.getStrategyVersion());
+            double winR = (stv != null) ? stv.winReturn : WIN_PROFIT_USD;
+            double loseR = (stv != null) ? stv.loseReturn : LOSE_PROFIT_USD;
+            double profit = isWin ? winR : loseR;
                         double profitPercent = (profit / openPrice) * 100;
                         String status = isWin ? "盈利" : "亏损";
 
@@ -828,8 +899,9 @@ public class RealTimeTradingTest {
     }
 
     /**
-     * 实时交易主入口
-     * 启动 WebSocket 连接币安，实时接收1秒K线并执行策略
+     * 实时交易主入口（仅运行 v11/v12/v13）
+     * 启动 WebSocket 连接币安，实时接收1秒K线并执行回踩确认策略
+     * 核心逻辑：ER震荡判市 + 时段过滤 + 极值检测 + 回踩确认开单 + 自动结算
      * 包含：数据连续性检查、定时结算、状态打印、数据清理、K线批量写入
      * 按 Ctrl+C 停止运行
      */
@@ -839,9 +911,10 @@ public class RealTimeTradingTest {
         initVersions();
 
         log("INFO", "系统", "========== ETH/USDT 实时交易策略启动 ==========");
-        log("INFO", "系统", "策略规则: 七版本并行(base/v1/v2/v3/v4/v5/v6), 4U赢/5U亏");
-        log("INFO", "系统", "v1=0.2%趋势过滤 v2=0.5%趋势过滤 base=基准");
-        log("INFO", "系统", "v3=15m窗口 v4=30m窗口 v5=30m结算 v6=2h窗口+1h结算");
+        log("INFO", "系统", "策略规则: 仅运行 v11/v12/v13 三版本并行，回踩确认+ER震荡+时段过滤");
+        log("INFO", "系统", "v11: 25m极值/10m结算/0.05%回踩 → +4U/-5U");
+        log("INFO", "系统", "v12: 40m极值/30m结算/0.01%回踩 → +4.25U/-5U");
+        log("INFO", "系统", "v13: 40m极值/1h结算/0.01%回踩 → +4.25U/-5U");
         log("INFO", "系统", "数据缓冲: 4小时 清理: 每小时清理4小时前数据");
 
         System.out.println("╔══════════════════════════════════════════════╗");
@@ -852,10 +925,12 @@ public class RealTimeTradingTest {
         System.out.println("策略规则:");
         System.out.println("  ├─ 数据源: 币安 WebSocket 1秒K线 (data-stream.binance.vision)");
         System.out.println("  ├─ 数据缓冲: 4小时  清理: 每小时清理4小时前数据");
-        System.out.println("  ├─ 开单: 窗口内极值出现1分钟后开单, 冷却1分钟");
-        System.out.println("  ├─ 胜负: 方向正确+4U, 方向错误-5U");
-        System.out.println("  ├─ base(20m/10m) v1(20m/10m 0.2%) v2(20m/10m 0.5%)");
-        System.out.println("  ├─ v3(15m/10m) v4(30m/10m) v5(20m/30m) v6(2h/1h)");
+        System.out.println("  ├─ 核心逻辑: ER震荡判市(ER<0.20) + 时段过滤(10个高胜率时段)");
+        System.out.println("  ├─ 开单规则: 极值出现后等待回踩确认，突破取消");
+        System.out.println("  ├─ 版本配置:");
+        System.out.println("  │  v11: 25m极值窗口 / 10分钟结算 / 0.05%回踩阈值 / 胜利+4U / 失败-5U");
+        System.out.println("  │  v12: 40m极值窗口 / 30分钟结算 / 0.01%回踩阈值 / 胜利+4.25U / 失败-5U");
+        System.out.println("  │  v13: 40m极值窗口 /  1小时结算 / 0.01%回踩阈值 / 胜利+4.25U / 失败-5U");
         System.out.println("  └─ 存储: 实时写入 eth_trade_record 表");
         System.out.println();
 
@@ -1096,6 +1171,9 @@ public class RealTimeTradingTest {
             }
         }
 
+        // 检查回踩待确认队列
+        checkBouncePending(currentTs, currentPrice);
+
         // 诊断（每60次调用打印一次，覆盖所有窗口）
         if (strategyCalls.get() % 60 == 0) {
             StringBuilder diag = new StringBuilder();
@@ -1170,14 +1248,18 @@ public class RealTimeTradingTest {
     }
 
     /**
-     * 处理单个策略版本的开单逻辑
-     * @param ver 策略版本（含配置和计数器）
-     * @param ws 所属窗口的状态（冷却/去重）
+     * 处理单个策略版本的开单逻辑（v11/v12/v13 统一走回踩确认流程）
      */
     private void processVersion(long currentTs, double currentPrice, ExtremaResult ext,
                                 StrategyVersion ver, WindowState ws) {
         // 数据不健康时暂停开单，避免在数据中断期间产生无效交易
         if (!dataHealthy) {
+            return;
+        }
+
+        // 回踩确认版本走独立流程
+        if (ver.useBounceConfirm) {
+            processBounceVersion(currentTs, currentPrice, ext, ver, ws);
             return;
         }
 
@@ -1215,6 +1297,145 @@ public class RealTimeTradingTest {
                 }
             }
         }
+    }
+
+    /**
+     * 回踩确认版本处理（v11/v12/v13 专用）
+     * 1. ER震荡判市：仅震荡市(ER < 0.20)开单，单边市(ER > 0.65)跳过
+     * 2. 时段过滤：仅北京高胜率时段(00-01,06-07,12-13,15,19,22-23)开单
+     * 3. 极值检测后将信号加入回踩待确认队列，等待回踩确认或突破取消
+     */
+    private void processBounceVersion(long currentTs, double currentPrice, ExtremaResult ext,
+                                      StrategyVersion ver, WindowState ws) {
+        // ER震荡判市
+        if (ver.useERFilter) {
+            boolean isRanging = isERanging();
+            if (!isRanging) {
+                boolean isTrending = isERTrending();
+                if (isTrending) {
+                    rejectTrending.incrementAndGet();
+                } else {
+                    rejectNotRanging.incrementAndGet();
+                }
+                return;
+            }
+        }
+
+        // 时段过滤
+        if (ver.useHourFilter) {
+            long epochSecond = currentTs / 1_000_000L;
+            int hour = java.time.Instant.ofEpochSecond(epochSecond)
+                    .atZone(ZoneId.systemDefault()).getHour();
+            if (!ALLOWED_HOURS.contains(hour)) {
+                rejectHourFilter.incrementAndGet();
+                return;
+            }
+        }
+
+        // 检查极值gap
+        long gapMax = currentTs - ext.maxTs;
+        long gapMin = currentTs - ext.minTs;
+        boolean isHighExtreme = gapMax >= 0 && gapMax < BOUNCE_WINDOW_US;
+        boolean isLowExtreme = gapMin >= 0 && gapMin < BOUNCE_WINDOW_US;
+
+        if (!isHighExtreme && !isLowExtreme) return;
+
+        // 去重
+        if (isHighExtreme && ext.maxTs == ws.lastShortTs) return;
+        if (isLowExtreme && ext.minTs == ws.lastLongTs) return;
+
+        if (isHighExtreme) ws.lastShortTs = ext.maxTs;
+        if (isLowExtreme) ws.lastLongTs = ext.minTs;
+
+        // 加入回踩待确认队列
+        BouncePending bp = new BouncePending();
+        bp.extremeTs = currentTs;
+        bp.extremePrice = currentPrice;
+        bp.isHighExtreme = isHighExtreme;
+        bp.maxData = ext.maxData;
+        bp.minData = ext.minData;
+        bp.ver = ver;
+        bouncePending.put(currentTs, bp);
+    }
+
+    /**
+     * 检查回踩待确认队列，处理回踩确认或突破取消
+     */
+    private void checkBouncePending(long currentTs, double currentPrice) {
+        if (bouncePending.isEmpty()) return;
+
+        List<Long> toRemove = new ArrayList<>();
+        for (Map.Entry<Long, BouncePending> entry : bouncePending.entrySet()) {
+            BouncePending bp = entry.getValue();
+            long elapsed = currentTs - bp.extremeTs;
+
+            if (elapsed > BOUNCE_WINDOW_US) {
+                rejectNoBounce.incrementAndGet();
+                toRemove.add(entry.getKey());
+                continue;
+            }
+
+            double threshold = bp.ver.bounceThreshold;
+            boolean bounced = false;
+            boolean brokeOut = false;
+
+            if (bp.isHighExtreme) {
+                if (currentPrice <= bp.extremePrice * (1 - threshold)) {
+                    bounced = true;
+                } else if (currentPrice > bp.extremePrice * (1 + threshold)) {
+                    brokeOut = true;
+                }
+            } else {
+                if (currentPrice >= bp.extremePrice * (1 + threshold)) {
+                    bounced = true;
+                } else if (currentPrice < bp.extremePrice * (1 - threshold)) {
+                    brokeOut = true;
+                }
+            }
+
+            if (brokeOut) {
+                rejectBreakout.incrementAndGet();
+                toRemove.add(entry.getKey());
+                continue;
+            }
+
+            if (bounced) {
+                String direction = bp.isHighExtreme ? DIR_SHORT : DIR_LONG;
+                createTrade(bp.maxData, bp.minData, direction, currentTs, currentPrice, bp.ver);
+                toRemove.add(entry.getKey());
+            }
+        }
+
+        for (Long key : toRemove) {
+            bouncePending.remove(key);
+        }
+    }
+
+    /**
+     * 计算ER效率比率，判断是否为震荡市
+     */
+    private boolean isERanging() {
+        if (erCount < ER_LOOKBACK) return false;
+        if (erSum <= 0) return false;
+        double netChange = getNetChange();
+        double er = netChange / erSum;
+        return er >= 0 && er < ER_RANGING;
+    }
+
+    private boolean isERTrending() {
+        if (erCount < ER_LOOKBACK) return false;
+        if (erSum <= 0) return false;
+        double netChange = getNetChange();
+        double er = netChange / erSum;
+        return er > ER_TRENDING;
+    }
+
+    private double getNetChange() {
+        if (prevClose <= 0 || dataBuffer.isEmpty()) return 0;
+        long targetTs = dataBuffer.lastKey() - ER_LOOKBACK * 1_000_000L;
+        Map.Entry<Long, KlineData> entry = dataBuffer.floorEntry(targetTs);
+        if (entry == null) return 0;
+        return Math.abs(prevClose - entry.getValue().close);
     }
 
     /**
@@ -1326,7 +1547,10 @@ public class RealTimeTradingTest {
                 boolean isWin = DIR_LONG.equals(pt.direction)
                         ? closePrice > openPrice
                         : closePrice < openPrice;
-                double profit = isWin ? WIN_PROFIT_USD : LOSE_PROFIT_USD;
+                StrategyVersion stv = verByName.get(pt.strategyVersion);
+                double winR = (stv != null) ? stv.winReturn : WIN_PROFIT_USD;
+                double loseR = (stv != null) ? stv.loseReturn : LOSE_PROFIT_USD;
+                double profit = isWin ? winR : loseR;
                 double profitPercent = (profit / openPrice) * 100;
                 String status = isWin ? "盈利" : "亏损";
 
@@ -1435,14 +1659,15 @@ public class RealTimeTradingTest {
                 strategyCalls.get(), strategyRejected.get(),
                 totalTrades(), settledCount(), stats.pendingTrades, totalProfit));
 
-        System.out.println("\n┌──────────────────────────────────────────────────┐");
-        System.out.println("│         实时交易状态 (" + runningMinutes + "分钟)            │");
+        System.out.println("\n┌──────────────────────────────────────────────────────────┐");
+        System.out.println("│         实时交易状态 v11/v12/v13 (" + runningMinutes + "分钟)                    │");
         System.out.println("├──────────────────────────────────────────────────┤");
         System.out.println("│ 缓冲:" + fmt6(dataBuffer.size()) + "条 接收:" + fmt6(klineReceived.get()) + " 错误:" + fmt6(klineParseError.get()) + "│");
         System.out.println("│ 原始:" + fmt6(rawMessageCount.get()) + "   跳过:" + fmt6(skippedUnclosed.get()) + " 静默:" + fmt4((System.currentTimeMillis() - lastRawMessageAt) / 1000) + "s│");
         System.out.println("│ 健康:" + (dataHealthy ? "✅正常" : "❌异常") + " 重连:" + reconnectCount.get() + " 连续缺失:" + consecutiveMissCount.get() + "               │");
         System.out.println("│ 策略:" + fmt6(strategyCalls.get()) + "次 拒绝:" + fmt6(strategyRejected.get()) + "                    │");
         System.out.println("│ 拒绝: 空距" + rejectShortGap.get() + " 多距" + rejectLongGap.get() + " 去重" + rejectDedup.get() + " 冷却" + rejectCooling.get() + "│");
+        System.out.println("│ ER过滤: 单边" + rejectTrending.get() + " 非震荡" + rejectNotRanging.get() + " 时段" + rejectHourFilter.get() + " 无回踩" + rejectNoBounce.get() + " 突破" + rejectBreakout.get() + "│");
         if (!lastDiag.isEmpty()) {
             System.out.println("│ 诊断: " + lastDiag.substring(0, Math.min(48, lastDiag.length())) + " │");
         }
