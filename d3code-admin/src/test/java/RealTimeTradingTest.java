@@ -133,12 +133,12 @@ public class RealTimeTradingTest {
         final long settleUs;            // 结算等待时间（微秒）
         final long gapUs;               // 极值距当前允许的最小时差（微秒）
         final double trendThreshold;    // 趋势过滤阈值，0=无过滤
-    final double bounceThreshold;   // 回踩确认阈值，0=无回踩确认
-    final double winReturn;         // 胜利收益(U)
-    final double loseReturn;        // 亏损收益(U)
-    final boolean useBounceConfirm; // 是否启用回踩确认
-    final boolean useERFilter;      // 是否启用ER震荡判市
-    final boolean useHourFilter;    // 是否启用时段过滤
+        final double bounceThreshold;   // 回踩确认阈值，0=无回踩确认
+        final double winReturn;         // 胜利收益(U)
+        final double loseReturn;        // 亏损收益(U)
+        final boolean useBounceConfirm; // 是否启用回踩确认
+        final boolean useERFilter;      // 是否启用ER震荡判市
+        final boolean useHourFilter;    // 是否启用时段过滤
 
         final AtomicInteger totalTrades  = new AtomicInteger(0);
         final AtomicInteger longTrades   = new AtomicInteger(0);
@@ -463,9 +463,9 @@ public class RealTimeTradingTest {
                                 ? settlePrice < openPrice
                                 : settlePrice > openPrice;
                         StrategyVersion stv = verByName.get(r.getStrategyVersion());
-            double winR = (stv != null) ? stv.winReturn : WIN_PROFIT_USD;
-            double loseR = (stv != null) ? stv.loseReturn : LOSE_PROFIT_USD;
-            double profit = isWin ? winR : loseR;
+                        double winR = (stv != null) ? stv.winReturn : WIN_PROFIT_USD;
+                        double loseR = (stv != null) ? stv.loseReturn : LOSE_PROFIT_USD;
+                        double profit = isWin ? winR : loseR;
                         double profitPercent = (profit / openPrice) * 100;
                         String status = isWin ? "盈利" : "亏损";
 
@@ -1139,6 +1139,23 @@ public class RealTimeTradingTest {
         long currentTs = currentData.timestamp;
         double currentPrice = currentData.close;
 
+        // ==================== ER效率比实时更新 ====================
+        if (prevClose > 0) {
+            double absChange = Math.abs(currentPrice - prevClose);
+            erSum += absChange;
+            if (erRingFull) {
+                erSum -= erRing[erRingIdx];
+            }
+            erRing[erRingIdx] = absChange;
+            erRingIdx++;
+            if (erRingIdx >= ER_LOOKBACK) {
+                erRingIdx = 0;
+                erRingFull = true;
+            }
+            erCount++;
+        }
+        prevClose = currentPrice;
+
         // 数据新鲜度检查：如果缓冲最新数据超过90秒未更新，跳过策略执行
         if (!dataBuffer.isEmpty()) {
             long dataAgeMs = (System.currentTimeMillis() * 1000 - dataBuffer.lastKey()) / 1000;
@@ -1474,7 +1491,7 @@ public class RealTimeTradingTest {
      * @param settleUs  结算时间（微秒，从开单时间算起）
      */
     private boolean createTrade(KlineData maxData, KlineData minData,
-                             String direction, long openTs, double openPrice, StrategyVersion ver) {
+                                String direction, long openTs, double openPrice, StrategyVersion ver) {
         try {
             String openTimeStr = formatTimestamp(openTs);
             String maxTimeStr = formatTimestamp(maxData.timestamp);
@@ -1903,8 +1920,8 @@ public class RealTimeTradingTest {
     }
 
     private List<ReplayTrade> runStrategyOnKlines(List<KlinePoint> allKlines,
-                                                   Map<Long, KlinePoint> klineMap,
-                                                   List<Long> timestamps) {
+                                                  Map<Long, KlinePoint> klineMap,
+                                                  List<Long> timestamps) {
         List<ReplayTrade> trades = new ArrayList<>();
         Deque<Integer> maxDeque = new LinkedList<>();
         Deque<Integer> minDeque = new LinkedList<>();
@@ -1966,10 +1983,10 @@ public class RealTimeTradingTest {
     }
 
     private ReplayTrade applyCoolingAndOpen(List<KlinePoint> allKlines,
-                                             Map<Long, KlinePoint> klineMap,
-                                             int startIdx, boolean isShort,
-                                             double extreme, long currentTs,
-                                             List<Long> timestamps) {
+                                            Map<Long, KlinePoint> klineMap,
+                                            int startIdx, boolean isShort,
+                                            double extreme, long currentTs,
+                                            List<Long> timestamps) {
         double currentExtreme = extreme;
         long lastBreakMs = currentTs - 1000;
         long maxTime = currentTs + 15 * 60 * 1000L;
@@ -2615,7 +2632,7 @@ public class RealTimeTradingTest {
         System.out.println("╠══════════════════════════════════════════════╣");
         System.out.println("║ [逆趋势亏损详情]                             ║");
         details.stream().filter(d -> d.trendChange > 0.003 && "空".equals(d.dir)
-                || d.trendChange < -0.003 && "多".equals(d.dir))
+                        || d.trendChange < -0.003 && "多".equals(d.dir))
                 .forEach(d -> System.out.println(String.format(
                         "║ %s %s 亏%.4f 趋势%+.2f%% ║", d.time, d.dir, d.loss, d.trendChange * 100)));
         System.out.println("╚══════════════════════════════════════════════╝");
@@ -2726,8 +2743,8 @@ public class RealTimeTradingTest {
      * 原生数组 + 二分查找，避免反复解析String和HashMap装箱，适配300万+数据
      */
     private BacktestResult runBacktestLarge(List<EthKlineSecond> allData,
-                                             long[] tsArr, double[] closeArr,
-                                             double trendThreshold, long trendLookbackUs) {
+                                            long[] tsArr, double[] closeArr,
+                                            double trendThreshold, long trendLookbackUs) {
         String label = trendThreshold > 0
                 ? String.format("%.1f%%/%.0fmin", trendThreshold * 100, trendLookbackUs / 60_000_000.0)
                 : "无过滤";
@@ -2846,7 +2863,7 @@ public class RealTimeTradingTest {
     }
 
     private boolean isTrendUpFast(long[] tsArr, double[] closeArr, int curIdx,
-                                   double curPrice, long lookbackUs, double threshold) {
+                                  double curPrice, long lookbackUs, double threshold) {
         int oldIdx = trendLookupIdx(tsArr, tsArr[curIdx] - lookbackUs);
         if (oldIdx < 0) return false;
         double oldPrice = closeArr[oldIdx];
@@ -2854,7 +2871,7 @@ public class RealTimeTradingTest {
     }
 
     private boolean isTrendDownFast(long[] tsArr, double[] closeArr, int curIdx,
-                                     double curPrice, long lookbackUs, double threshold) {
+                                    double curPrice, long lookbackUs, double threshold) {
         int oldIdx = trendLookupIdx(tsArr, tsArr[curIdx] - lookbackUs);
         if (oldIdx < 0) return false;
         double oldPrice = closeArr[oldIdx];
